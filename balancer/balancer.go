@@ -14,6 +14,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// fallbackPolicyRanked 表示按策略排序结果直接回退。
 const fallbackPolicyRanked = "policy_ranked"
 
 // Balancer 定义 A2X 路由主接口。
@@ -22,6 +23,7 @@ type Balancer interface {
 	Close(ctx context.Context) error
 }
 
+// a2xBalancer 是 Balancer 接口的默认实现。
 type a2xBalancer struct {
 	cfg  config.Config
 	reg  *registry.Manager
@@ -45,10 +47,12 @@ func New(cfg config.Config, opts ...config.Option) (Balancer, error) {
 	return &a2xBalancer{cfg: local, reg: registry.Default(), sink: local.TelemetrySink}, nil
 }
 
+// Close 预留资源释放入口，当前实现无状态可释放。
 func (b *a2xBalancer) Close(_ context.Context) error {
 	return nil
 }
 
+// Route 执行完整路由流程：过滤、算法筛选、策略重排、目标函数择优与回退。
 func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes []types.NodeSnapshot) (types.Candidate, error) {
 	started := time.Now()
 
@@ -152,6 +156,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 	return ranked[0], nil
 }
 
+// chooseByObjective 在超时约束下调用目标函数插件进行二次择优。
 func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestContext, candidates []types.Candidate) (types.Candidate, error) {
 	objectiveName := b.cfg.Plugins.Objective.Name
 	plugin, ok := b.reg.GetObjective(objectiveName)
@@ -194,6 +199,7 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 	}
 }
 
+// fallback 按配置的回退链依次尝试生成可用候选。
 func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, filtered []types.NodeSnapshot, ranked []types.Candidate, cause error) (types.Candidate, error) {
 	// 回退链允许混合使用 policy_ranked 和算法名，按配置顺序逐个尝试。
 	for _, step := range b.cfg.FallbackChain {
@@ -237,11 +243,13 @@ func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, fi
 	return types.Candidate{}, errors.Join(cause, lberrors.ErrNoCandidate)
 }
 
+// emit 统一补齐事件时间戳并安全发送观测事件。
 func (b *a2xBalancer) emit(e telemetry.TelemetryEvent) {
 	e.Timestamp = time.Now()
 	telemetry.EmitSafe(b.sink, e)
 }
 
+// filterNodes 按健康状态与模型可用性执行硬约束过滤。
 func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.NodeSnapshot, error) {
 	if len(nodes) == 0 {
 		return nil, lberrors.ErrNoHealthyNodes
@@ -267,6 +275,7 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.
 	return filtered, nil
 }
 
+// sinceMs 返回从 started 到当前时刻的毫秒耗时。
 func sinceMs(started time.Time) int64 {
 	return time.Since(started).Milliseconds()
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// pluginName 是 p2c 插件注册名。
 const pluginName = "p2c"
 
 // Plugin 实现 p2c 算法。
@@ -20,10 +21,12 @@ func init() {
 	registry.MustRegisterAlgorithm(Plugin{})
 }
 
+// Name 返回插件注册名。
 func (Plugin) Name() string {
 	return pluginName
 }
 
+// SelectCandidates 先执行一次 P2C 选首个候选，再补齐剩余 topK。
 func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnapshot, topK int) ([]types.Candidate, error) {
 	if topK <= 0 {
 		return nil, fmt.Errorf("topK=%d: %w", topK, lberrors.ErrPluginMisconfigured)
@@ -63,6 +66,7 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 	return selected, nil
 }
 
+// pickByTwoChoices 从两次哈希命中的节点中选出更优者。
 func pickByTwoChoices(req types.RequestContext, nodes []types.NodeSnapshot) types.NodeSnapshot {
 	if len(nodes) == 1 {
 		return nodes[0]
@@ -81,6 +85,7 @@ func pickByTwoChoices(req types.RequestContext, nodes []types.NodeSnapshot) type
 	return b
 }
 
+// hashRequest 将请求关键字段哈希为稳定的 uint64 值。
 func hashRequest(req types.RequestContext) uint64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(req.RequestID))
@@ -90,10 +95,12 @@ func hashRequest(req types.RequestContext) uint64 {
 	return h.Sum64()
 }
 
+// nodeScore 计算节点在候选输出中的展示分值。
 func nodeScore(node types.NodeSnapshot) float64 {
 	return float64(node.Inflight*10000+node.QueueDepth*100) + node.P95LatencyMs + node.ErrorRate*1000
 }
 
+// min 返回两个整数中的较小值。
 func min(a, b int) int {
 	if a < b {
 		return a

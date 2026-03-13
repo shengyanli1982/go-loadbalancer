@@ -9,6 +9,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// TestReRankWithQuota 验证配置配额后会过滤超限节点。
 func TestReRankWithQuota(t *testing.T) {
 	plugin := Plugin{}
 	req := types.RequestContext{
@@ -26,6 +27,7 @@ func TestReRankWithQuota(t *testing.T) {
 	assert.Equal(t, "n1", out[0].Node.NodeID)
 }
 
+// TestReRankInvalidQuota 验证非法配额值会返回错误。
 func TestReRankInvalidQuota(t *testing.T) {
 	plugin := Plugin{}
 	req := types.RequestContext{

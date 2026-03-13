@@ -11,8 +11,11 @@ import (
 )
 
 const (
+	// pluginName 是 tenant_quota 插件注册名。
 	pluginName          = "tenant_quota"
+	// metadataMaxInflight 表示每租户最大并发上限字段。
 	metadataMaxInflight = "tenant_quota_max_inflight"
+	// metadataMaxQueue 表示每租户最大排队上限字段。
 	metadataMaxQueue    = "tenant_quota_max_queue"
 )
 
@@ -23,10 +26,12 @@ func init() {
 	registry.MustRegisterPolicy(Plugin{})
 }
 
+// Name 返回插件注册名。
 func (Plugin) Name() string {
 	return pluginName
 }
 
+// ReRank 根据请求中的租户配额对候选进行过滤。
 func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	if len(candidates) == 0 {
 		return nil, nil
@@ -61,6 +66,7 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 	return out, nil
 }
 
+// parseQuota 从 metadata 解析租户配额并返回是否启用。
 func parseQuota(metadata map[string]string) (maxInflight, maxQueue int, enabled bool, err error) {
 	if len(metadata) == 0 {
 		return 0, 0, false, nil

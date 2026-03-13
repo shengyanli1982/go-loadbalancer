@@ -9,6 +9,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// TestReRankFiltersUnhealthyCandidates 验证健康门策略会过滤不健康节点。
 func TestReRankFiltersUnhealthyCandidates(t *testing.T) {
 	plugin := Plugin{}
 	candidates := []types.Candidate{

@@ -13,11 +13,13 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// TestDefaultConfigValidate 验证默认配置可以通过校验。
 func TestDefaultConfigValidate(t *testing.T) {
 	cfg := config.DefaultConfig()
 	require.NoError(t, cfg.Validate())
 }
 
+// TestValidateReturnsJoinedErrors 验证多项错误会以 join 形式返回。
 func TestValidateReturnsJoinedErrors(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.TopK = 0
@@ -46,6 +48,7 @@ func TestValidateReturnsJoinedErrors(t *testing.T) {
 	assert.Contains(t, codes, lberrors.CodeMissingLLMWeights)
 }
 
+// TestValidateUnknownAlgorithmBinding 验证算法绑定未注册时返回对应错误码。
 func TestValidateUnknownAlgorithmBinding(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Plugins.Algorithms[types.RouteGeneric] = "unknown_algo"
@@ -59,6 +62,7 @@ func TestValidateUnknownAlgorithmBinding(t *testing.T) {
 	assert.Equal(t, lberrors.CodeMissingAlgorithmBinding, cfgErr.Code)
 }
 
+// flattenConfigErrors 递归展开 errors.Join 链中的 ConfigError。
 func flattenConfigErrors(err error) []*lberrors.ConfigError {
 	if err == nil {
 		return nil

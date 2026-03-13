@@ -16,9 +16,13 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// algorithmStub 是算法插件测试桩。
 type algorithmStub struct{ name string }
 
+// Name 返回插件名。
 func (s algorithmStub) Name() string { return s.name }
+
+// SelectCandidates 返回固定候选用于测试。
 func (s algorithmStub) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapshot, topK int) ([]types.Candidate, error) {
 	if len(nodes) == 0 || topK <= 0 {
 		return nil, nil
@@ -26,16 +30,24 @@ func (s algorithmStub) SelectCandidates(_ types.RequestContext, nodes []types.No
 	return []types.Candidate{{Node: nodes[0]}}, nil
 }
 
+// policyStub 是策略插件测试桩。
 type policyStub struct{ name string }
 
+// Name 返回插件名。
 func (s policyStub) Name() string { return s.name }
+
+// ReRank 原样返回候选用于测试。
 func (s policyStub) ReRank(_ types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	return candidates, nil
 }
 
+// objectiveStub 是目标函数插件测试桩。
 type objectiveStub struct{ name string }
 
+// Name 返回插件名。
 func (s objectiveStub) Name() string { return s.name }
+
+// Choose 返回首个候选用于测试。
 func (s objectiveStub) Choose(_ types.RequestContext, candidates []types.Candidate) (types.Candidate, error) {
 	if len(candidates) == 0 {
 		return types.Candidate{}, nil
@@ -43,6 +55,7 @@ func (s objectiveStub) Choose(_ types.RequestContext, candidates []types.Candida
 	return candidates[0], nil
 }
 
+// TestRegisterDuplicatePlugin 验证重复注册会返回重复错误。
 func TestRegisterDuplicatePlugin(t *testing.T) {
 	m := registry.NewManager()
 	require.NoError(t, m.RegisterAlgorithm(algorithmStub{name: "algoA"}))
@@ -51,6 +64,7 @@ func TestRegisterDuplicatePlugin(t *testing.T) {
 	assert.ErrorIs(t, err, lberrors.ErrDuplicatePlugin)
 }
 
+// TestConcurrentRegisterAndRead 验证并发注册与读取不会破坏可见性。
 func TestConcurrentRegisterAndRead(t *testing.T) {
 	m := registry.NewManager()
 
@@ -75,6 +89,7 @@ func TestConcurrentRegisterAndRead(t *testing.T) {
 	assert.True(t, m.HasObjective("objective_1"))
 }
 
+// 编译期接口断言，确保测试桩满足插件接口约束。
 var _ algorithm.Plugin = algorithmStub{}
 var _ policy.Plugin = policyStub{}
 var _ objective.Plugin = objectiveStub{}

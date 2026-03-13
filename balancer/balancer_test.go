@@ -21,7 +21,10 @@ import (
 
 type slowObjective struct{}
 
+// Name 返回测试用慢目标函数的插件名。
 func (slowObjective) Name() string { return "slow_objective" }
+
+// Choose 模拟慢执行目标函数，用于覆盖超时回退分支。
 func (slowObjective) Choose(_ types.RequestContext, candidates []types.Candidate) (types.Candidate, error) {
 	time.Sleep(30 * time.Millisecond)
 	if len(candidates) == 0 {
@@ -32,10 +35,12 @@ func (slowObjective) Choose(_ types.RequestContext, candidates []types.Candidate
 
 type panicSink struct{}
 
+// OnEvent 模拟 telemetry sink panic，验证主流程隔离。
 func (panicSink) OnEvent(_ telemetry.TelemetryEvent) {
 	panic("sink panic")
 }
 
+// TestRouteSuccess 验证基础路由成功场景。
 func TestRouteSuccess(t *testing.T) {
 	cfg := config.DefaultConfig()
 	b, err := balancer.New(cfg, config.WithAlgorithm(string(types.RouteGeneric), "least_request"))
@@ -52,6 +57,7 @@ func TestRouteSuccess(t *testing.T) {
 	assert.Equal(t, "n2", candidate.Node.NodeID)
 }
 
+// TestRouteNoHealthyNodes 验证无健康节点时返回预期错误。
 func TestRouteNoHealthyNodes(t *testing.T) {
 	cfg := config.DefaultConfig()
 	b, err := balancer.New(cfg)
@@ -62,6 +68,7 @@ func TestRouteNoHealthyNodes(t *testing.T) {
 	assert.ErrorIs(t, routeErr, lberrors.ErrNoHealthyNodes)
 }
 
+// TestRouteFallbackOnPolicyError 验证策略执行失败会触发回退链。
 func TestRouteFallbackOnPolicyError(t *testing.T) {
 	cfg := config.DefaultConfig()
 	b, err := balancer.New(
@@ -85,6 +92,7 @@ func TestRouteFallbackOnPolicyError(t *testing.T) {
 	assert.True(t, containsReason(candidate.Reason, "fallback="))
 }
 
+// TestRouteFallbackOnObjectiveTimeout 验证目标函数超时会触发回退链。
 func TestRouteFallbackOnObjectiveTimeout(t *testing.T) {
 	if err := registry.RegisterObjective(slowObjective{}); err != nil && !errors.Is(err, lberrors.ErrDuplicatePlugin) {
 		require.NoError(t, err)
@@ -107,6 +115,7 @@ func TestRouteFallbackOnObjectiveTimeout(t *testing.T) {
 	assert.True(t, containsReason(candidate.Reason, "fallback="))
 }
 
+// TestRouteTelemetryPanicDoesNotBreakFlow 验证 telemetry panic 不影响路由主流程。
 func TestRouteTelemetryPanicDoesNotBreakFlow(t *testing.T) {
 	cfg := config.DefaultConfig()
 	b, err := balancer.New(
@@ -124,6 +133,7 @@ func TestRouteTelemetryPanicDoesNotBreakFlow(t *testing.T) {
 	assert.Equal(t, "n1", candidate.Node.NodeID)
 }
 
+// containsReason 判断原因列表中是否包含指定片段。
 func containsReason(reasons []string, prefix string) bool {
 	for _, reason := range reasons {
 		if strings.Contains(reason, prefix) {

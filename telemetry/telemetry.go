@@ -6,9 +6,13 @@ import "time"
 type EventType string
 
 const (
+	// EventRouteDecision 表示路由主流程决策事件。
 	EventRouteDecision   EventType = "route_decision"
+	// EventRouteFallback 表示路由进入回退链的事件。
 	EventRouteFallback   EventType = "route_fallback"
+	// EventDispatchResult 表示最终派发结果事件。
 	EventDispatchResult  EventType = "dispatch_result"
+	// EventObjectiveResult 表示目标函数执行结果事件。
 	EventObjectiveResult EventType = "objective_result"
 )
 

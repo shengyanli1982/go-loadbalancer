@@ -6,6 +6,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// pluginName 是 health_gate 插件注册名。
 const pluginName = "health_gate"
 
 // Plugin 实现健康过滤策略。
@@ -15,10 +16,12 @@ func init() {
 	registry.MustRegisterPolicy(Plugin{})
 }
 
+// Name 返回插件注册名。
 func (Plugin) Name() string {
 	return pluginName
 }
 
+// ReRank 过滤掉不健康节点并保持剩余候选相对顺序。
 func (Plugin) ReRank(_ types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	filtered := make([]types.Candidate, 0, len(candidates))
 	for _, candidate := range candidates {

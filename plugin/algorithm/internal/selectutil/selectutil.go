@@ -34,6 +34,7 @@ func SelectTopKExcludeNodeID(nodes []types.NodeSnapshot, excludedNodeID string, 
 	return selectTopK(nodes, topK, excludedNodeID)
 }
 
+// selectTopK 使用固定容量最大堆选出最优的 topK 节点并排序输出。
 func selectTopK(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []types.NodeSnapshot {
 	if topK <= 0 || len(nodes) == 0 {
 		return nil
@@ -76,10 +77,12 @@ func selectTopK(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []t
 	return out
 }
 
+// nodeMaxHeap 是容量受限的最大堆实现，用于维护当前最差候选。
 type nodeMaxHeap struct {
 	items []types.NodeSnapshot
 }
 
+// Len 返回堆中元素数量。
 func (h nodeMaxHeap) Len() int { return len(h.items) }
 
 // Less 反转比较规则，构建“最差节点在堆顶”的固定容量堆。
@@ -87,14 +90,17 @@ func (h nodeMaxHeap) Less(i, j int) bool {
 	return LessNode(h.items[j], h.items[i])
 }
 
+// Swap 交换堆中两个元素位置。
 func (h nodeMaxHeap) Swap(i, j int) {
 	h.items[i], h.items[j] = h.items[j], h.items[i]
 }
 
+// Push 向堆尾追加元素，由 heap 包触发上滤。
 func (h *nodeMaxHeap) Push(x any) {
 	h.items = append(h.items, x.(types.NodeSnapshot))
 }
 
+// Pop 弹出堆尾元素，由 heap 包在调整后调用。
 func (h *nodeMaxHeap) Pop() any {
 	last := len(h.items) - 1
 	item := h.items[last]

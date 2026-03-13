@@ -7,6 +7,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// BenchmarkChoose 基准测试加权目标函数的择优性能。
 func BenchmarkChoose(b *testing.B) {
 	plugin := Plugin{}
 	candidates := benchmarkCandidates(64)
@@ -19,6 +20,7 @@ func BenchmarkChoose(b *testing.B) {
 	}
 }
 
+// benchmarkCandidates 生成基准测试候选样本。
 func benchmarkCandidates(n int) []types.Candidate {
 	out := make([]types.Candidate, 0, n)
 	for i := 0; i < n; i++ {

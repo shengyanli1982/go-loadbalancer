@@ -11,6 +11,7 @@ import (
 )
 
 const (
+	// fallbackPolicyRanked 表示直接回退到策略排序结果。
 	fallbackPolicyRanked = "policy_ranked"
 )
 
@@ -303,6 +304,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// isValidRouteClass 判断路由类别是否为受支持的内置枚举值。
 func isValidRouteClass(routeClass types.RouteClass) bool {
 	switch routeClass {
 	case types.RouteGeneric, types.RouteLLMPrefill, types.RouteLLMDecode:

@@ -9,6 +9,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// TestChooseCandidate 验证加权目标函数会选择更优候选。
 func TestChooseCandidate(t *testing.T) {
 	plugin := Plugin{}
 	candidates := []types.Candidate{

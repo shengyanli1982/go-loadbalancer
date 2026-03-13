@@ -9,6 +9,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// TestSelectCandidatesOrder 验证 least_request 的候选排序结果。
 func TestSelectCandidatesOrder(t *testing.T) {
 	plugin := Plugin{}
 	nodes := []types.NodeSnapshot{

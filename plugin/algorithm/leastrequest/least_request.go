@@ -10,6 +10,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// pluginName 是 least_request 插件注册名。
 const pluginName = "least_request"
 
 // Plugin 实现 least_request 算法。
@@ -19,10 +20,12 @@ func init() {
 	registry.MustRegisterAlgorithm(Plugin{})
 }
 
+// Name 返回插件注册名。
 func (Plugin) Name() string {
 	return pluginName
 }
 
+// SelectCandidates 按 inflight/queue/延迟/错误率优先级选择候选节点。
 func (Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapshot, topK int) ([]types.Candidate, error) {
 	if topK <= 0 {
 		return nil, fmt.Errorf("topK=%d: %w", topK, lberrors.ErrPluginMisconfigured)

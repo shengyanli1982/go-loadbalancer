@@ -7,6 +7,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// BenchmarkSelectCandidates 基准测试 least_request 选点性能。
 func BenchmarkSelectCandidates(b *testing.B) {
 	plugin := Plugin{}
 	nodes := benchmarkNodes(1024)
@@ -19,6 +20,7 @@ func BenchmarkSelectCandidates(b *testing.B) {
 	}
 }
 
+// benchmarkNodes 生成基准测试节点样本。
 func benchmarkNodes(n int) []types.NodeSnapshot {
 	nodes := make([]types.NodeSnapshot, 0, n)
 	for i := 0; i < n; i++ {

@@ -9,6 +9,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+// TestSelectCandidatesTopKAndNoMutation 验证 topK 生效且输入切片不被修改。
 func TestSelectCandidatesTopKAndNoMutation(t *testing.T) {
 	plugin := Plugin{}
 	nodes := []types.NodeSnapshot{
