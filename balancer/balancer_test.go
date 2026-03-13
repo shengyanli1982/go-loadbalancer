@@ -10,13 +10,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go-loadbalancer/balancer"
-	"go-loadbalancer/config"
-	lberrors "go-loadbalancer/errors"
-	"go-loadbalancer/plugin/objective"
-	"go-loadbalancer/registry"
-	"go-loadbalancer/telemetry"
-	"go-loadbalancer/types"
+	"github.com/shengyanli1982/go-loadbalancer/balancer"
+	"github.com/shengyanli1982/go-loadbalancer/config"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/objective"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
+	"github.com/shengyanli1982/go-loadbalancer/telemetry"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 type slowObjective struct{}

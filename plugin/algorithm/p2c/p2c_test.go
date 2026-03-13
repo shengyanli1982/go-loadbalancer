@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go-loadbalancer/types"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 func TestSelectCandidatesTopKAndNoMutation(t *testing.T) {

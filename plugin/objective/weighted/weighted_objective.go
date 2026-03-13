@@ -3,10 +3,10 @@ package weighted
 import (
 	"math"
 
-	lberrors "go-loadbalancer/errors"
-	"go-loadbalancer/plugin/objective"
-	"go-loadbalancer/registry"
-	"go-loadbalancer/types"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/objective"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 const pluginName = "weighted_objective"

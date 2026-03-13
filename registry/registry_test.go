@@ -8,12 +8,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	lberrors "go-loadbalancer/errors"
-	"go-loadbalancer/plugin/algorithm"
-	"go-loadbalancer/plugin/objective"
-	"go-loadbalancer/plugin/policy"
-	"go-loadbalancer/registry"
-	"go-loadbalancer/types"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/algorithm"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/objective"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/policy"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 type algorithmStub struct{ name string }

@@ -1,9 +1,9 @@
 package healthgate
 
 import (
-	"go-loadbalancer/plugin/policy"
-	"go-loadbalancer/registry"
-	"go-loadbalancer/types"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/policy"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 const pluginName = "health_gate"

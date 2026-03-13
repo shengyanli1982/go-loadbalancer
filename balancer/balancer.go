@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"go-loadbalancer/config"
-	lberrors "go-loadbalancer/errors"
-	_ "go-loadbalancer/plugin/builtin"
-	"go-loadbalancer/registry"
-	"go-loadbalancer/telemetry"
-	"go-loadbalancer/types"
+	"github.com/shengyanli1982/go-loadbalancer/config"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	_ "github.com/shengyanli1982/go-loadbalancer/plugin/builtin"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
+	"github.com/shengyanli1982/go-loadbalancer/telemetry"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 const fallbackPolicyRanked = "policy_ranked"
@@ -52,6 +52,7 @@ func (b *a2xBalancer) Close(_ context.Context) error {
 func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes []types.NodeSnapshot) (types.Candidate, error) {
 	started := time.Now()
 
+	// 第一步：先做硬约束过滤（健康状态、模型可用性）。
 	filtered, filterErr := filterNodes(req, nodes)
 	if filterErr != nil {
 		b.emit(telemetry.TelemetryEvent{
@@ -74,6 +75,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 		return types.Candidate{}, fmt.Errorf("algorithm=%s: %w", algorithmName, lberrors.ErrUnknownPlugin)
 	}
 
+	// 第二步：算法层给出候选集；候选为空或出错都进入回退链。
 	candidates, err := algorithmPlugin.SelectCandidates(req, filtered, b.cfg.TopK)
 	if err != nil {
 		candidate, fbErr := b.fallback(ctx, req, filtered, nil, errors.Join(err, lberrors.ErrNoCandidate))
@@ -91,6 +93,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 	}
 
 	ranked := candidates
+	// 第三步：策略层按顺序重排，任何策略失败都触发回退。
 	for _, policyName := range b.cfg.Plugins.Policies {
 		policyPlugin, ok := b.reg.GetPolicy(policyName)
 		if !ok {
@@ -115,6 +118,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 		ranked = nextRanked
 	}
 
+	// 第四步：可选 Objective 二次择优；失败时按设计降级回退。
 	if b.cfg.Plugins.Objective.Enabled {
 		candidate, objectiveErr := b.chooseByObjective(ctx, req, ranked)
 		if objectiveErr == nil {
@@ -136,6 +140,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 		return candidate, nil
 	}
 
+	// 第五步：默认返回策略排序后的第一候选。
 	ranked[0].Reason = append(ranked[0].Reason, "selected_by=policy_ranked")
 	b.emit(telemetry.TelemetryEvent{
 		Type:       telemetry.EventRouteDecision,
@@ -160,6 +165,7 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 		err       error
 	}
 	resCh := make(chan result, 1)
+	// Objective 在 goroutine 内执行，避免阻塞 Route 热路径。
 	go func() {
 		candidate, err := plugin.Choose(req, candidates)
 		resCh <- result{candidate: candidate, err: err}
@@ -168,6 +174,7 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 	select {
 	case <-ctx.Done():
 		return types.Candidate{}, ctx.Err()
+	// 超时视为插件失败，交给上层 fallback 处理。
 	case <-time.After(timeout):
 		return types.Candidate{}, fmt.Errorf("objective=%s timeout=%s: %w", objectiveName, timeout, lberrors.ErrPluginTimeout)
 	case res := <-resCh:
@@ -179,6 +186,7 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 }
 
 func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, filtered []types.NodeSnapshot, ranked []types.Candidate, cause error) (types.Candidate, error) {
+	// 回退链允许混合使用 policy_ranked 和算法名，按配置顺序逐个尝试。
 	for _, step := range b.cfg.FallbackChain {
 		switch step {
 		case fallbackPolicyRanked:

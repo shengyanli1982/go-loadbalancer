@@ -1,6 +1,6 @@
 package policy
 
-import "go-loadbalancer/types"
+import "github.com/shengyanli1982/go-loadbalancer/types"
 
 // Plugin 定义策略插件契约。
 type Plugin interface {

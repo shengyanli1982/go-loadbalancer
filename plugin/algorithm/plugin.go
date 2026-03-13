@@ -1,6 +1,6 @@
 package algorithm
 
-import "go-loadbalancer/types"
+import "github.com/shengyanli1982/go-loadbalancer/types"
 
 // Plugin 定义算法插件契约。
 type Plugin interface {

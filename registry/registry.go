@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"sync"
 
-	lberrors "go-loadbalancer/errors"
-	"go-loadbalancer/plugin/algorithm"
-	"go-loadbalancer/plugin/objective"
-	"go-loadbalancer/plugin/policy"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/algorithm"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/objective"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/policy"
 )
 
 // Manager 负责维护插件注册表。

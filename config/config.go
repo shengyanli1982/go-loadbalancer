@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	lberrors "go-loadbalancer/errors"
-	"go-loadbalancer/registry"
-	"go-loadbalancer/telemetry"
-	"go-loadbalancer/types"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
+	"github.com/shengyanli1982/go-loadbalancer/telemetry"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 const (

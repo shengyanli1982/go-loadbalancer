@@ -5,10 +5,10 @@ import (
 	"hash/fnv"
 	"sort"
 
-	lberrors "go-loadbalancer/errors"
-	"go-loadbalancer/plugin/algorithm"
-	"go-loadbalancer/registry"
-	"go-loadbalancer/types"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/algorithm"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 const pluginName = "p2c"
@@ -35,6 +35,7 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 	selected := make([]types.Candidate, 0, min(topK, len(nodes)))
 	used := make(map[string]struct{}, len(nodes))
 
+	// 先按 P2C 选出首个候选，后续候选按统一比较器补齐。
 	first := pickByTwoChoices(req, nodes)
 	selected = append(selected, types.Candidate{
 		Node:  first,
@@ -77,6 +78,7 @@ func pickByTwoChoices(req types.RequestContext, nodes []types.NodeSnapshot) type
 	if len(nodes) == 1 {
 		return nodes[0]
 	}
+	// 使用请求哈希生成两个下标，保证相同请求分布相对稳定。
 	h := hashRequest(req)
 	i := int(h % uint64(len(nodes)))
 	j := int((h/uint64(len(nodes)) + 1) % uint64(len(nodes)))

@@ -7,10 +7,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go-loadbalancer/config"
-	lberrors "go-loadbalancer/errors"
-	_ "go-loadbalancer/plugin/builtin"
-	"go-loadbalancer/types"
+	"github.com/shengyanli1982/go-loadbalancer/config"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	_ "github.com/shengyanli1982/go-loadbalancer/plugin/builtin"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 func TestDefaultConfigValidate(t *testing.T) {

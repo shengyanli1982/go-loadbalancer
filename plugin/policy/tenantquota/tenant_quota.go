@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strconv"
 
-	lberrors "go-loadbalancer/errors"
-	"go-loadbalancer/plugin/policy"
-	"go-loadbalancer/registry"
-	"go-loadbalancer/types"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/policy"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 const (
@@ -31,6 +31,7 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 	if len(candidates) == 0 {
 		return nil, nil
 	}
+	// 配额来自请求 metadata，便于按租户动态控制而不改全局配置。
 	maxInflight, maxQueue, enabled, err := parseQuota(req.Metadata)
 	if err != nil {
 		return nil, err
@@ -64,6 +65,7 @@ func parseQuota(metadata map[string]string) (maxInflight, maxQueue int, enabled 
 	if len(metadata) == 0 {
 		return 0, 0, false, nil
 	}
+	// 配额字段允许缺省；只有出现字段才启用该策略。
 	if value, ok := metadata[metadataMaxInflight]; ok {
 		enabled = true
 		parsed, parseErr := strconv.Atoi(value)
