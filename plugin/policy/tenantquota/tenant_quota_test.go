@@ -14,7 +14,7 @@ func TestReRankWithQuota(t *testing.T) {
 	plugin := Plugin{}
 	req := types.RequestContext{
 		Metadata: map[string]string{
-			"tenant_quota_max_inflight": "3",
+			MetadataMaxInflightKey: "3",
 		},
 	}
 	candidates := []types.Candidate{
@@ -31,7 +31,7 @@ func TestReRankWithQuota(t *testing.T) {
 func TestReRankInvalidQuota(t *testing.T) {
 	plugin := Plugin{}
 	req := types.RequestContext{
-		Metadata: map[string]string{"tenant_quota_max_queue": "bad"},
+		Metadata: map[string]string{MetadataMaxQueueKey: "bad"},
 	}
 	_, err := plugin.ReRank(req, []types.Candidate{{Node: types.NodeSnapshot{NodeID: "n1"}}})
 	require.Error(t, err)

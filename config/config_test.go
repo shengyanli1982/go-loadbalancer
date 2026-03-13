@@ -24,10 +24,10 @@ func TestValidateReturnsJoinedErrors(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.TopK = 0
 	cfg.RouteClasses = []types.RouteClass{"bad", types.RouteLLMPrefill}
-	cfg.Plugins.Policies = []string{"health_gate", "health_gate", "missing_policy"}
+	cfg.Plugins.Policies = []string{config.PolicyHealthGate, config.PolicyHealthGate, "missing_policy"}
 	cfg.Weights.ByRouteClass[types.RouteLLMPrefill] = map[string]int{
-		"queue":      6000,
-		"error_rate": 3000,
+		config.MetricQueue:     6000,
+		config.MetricErrorRate: 3000,
 	}
 
 	err := cfg.Validate()

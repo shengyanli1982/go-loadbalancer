@@ -11,9 +11,44 @@ import (
 )
 
 const (
-	// fallbackPolicyRanked 表示直接回退到策略排序结果。
-	fallbackPolicyRanked = "policy_ranked"
+	// FallbackPolicyRanked 表示直接回退到策略排序结果。
+	FallbackPolicyRanked = "policy_ranked"
+
+	// 内置算法插件名。
+	AlgorithmP2C          = "p2c"
+	AlgorithmLeastRequest = "least_request"
+
+	// 内置策略插件名。
+	PolicyHealthGate  = "health_gate"
+	PolicyTenantQuota = "tenant_quota"
+
+	// 内置目标函数插件名。
+	ObjectiveWeighted = "weighted_objective"
+
+	// 权重指标键。
+	MetricQueue      = "queue"
+	MetricP95Latency = "p95_latency"
+	MetricErrorRate  = "error_rate"
+	MetricTTFT       = "ttft"
+	MetricTPOT       = "tpot"
+	MetricKVHit      = "kv_hit"
+
+	// 配置字段键（用于错误定位）。
+	FieldTopK                    = "top_k"
+	FieldRouteClasses            = "route_classes"
+	FieldPluginsAlgorithms       = "plugins.algorithms"
+	FieldPluginsPolicies         = "plugins.policies"
+	FieldPluginsObjectiveName    = "plugins.objective.name"
+	FieldPluginsObjectiveTimeout = "plugins.objective.timeout_ms"
+	FieldFallbackChain           = "fallback_chain"
+	FieldWeights                 = "weights"
 )
+
+var requiredLLMMetrics = [...]string{
+	MetricTTFT,
+	MetricTPOT,
+	MetricKVHit,
+}
 
 // ObjectiveConfig 定义目标函数插件配置。
 type ObjectiveConfig struct {
@@ -56,42 +91,42 @@ func DefaultConfig() Config {
 			types.RouteLLMPrefill,
 			types.RouteLLMDecode,
 		},
-		FallbackChain: []string{fallbackPolicyRanked, "least_request", "p2c"},
+		FallbackChain: []string{FallbackPolicyRanked, AlgorithmLeastRequest, AlgorithmP2C},
 		Plugins: PluginConfig{
 			Algorithms: map[types.RouteClass]string{
-				types.RouteGeneric:    "p2c",
-				types.RouteLLMPrefill: "least_request",
-				types.RouteLLMDecode:  "least_request",
+				types.RouteGeneric:    AlgorithmP2C,
+				types.RouteLLMPrefill: AlgorithmLeastRequest,
+				types.RouteLLMDecode:  AlgorithmLeastRequest,
 			},
-			Policies: []string{"health_gate", "tenant_quota"},
+			Policies: []string{PolicyHealthGate, PolicyTenantQuota},
 			Objective: ObjectiveConfig{
 				Enabled:   false,
-				Name:      "weighted_objective",
+				Name:      ObjectiveWeighted,
 				TimeoutMs: 3,
 			},
 		},
 		Weights: WeightConfig{
 			ByRouteClass: map[types.RouteClass]map[string]int{
 				types.RouteGeneric: {
-					"queue":       5000,
-					"p95_latency": 3000,
-					"error_rate":  2000,
+					MetricQueue:      5000,
+					MetricP95Latency: 3000,
+					MetricErrorRate:  2000,
 				},
 				types.RouteLLMPrefill: {
-					"queue":       2000,
-					"p95_latency": 1500,
-					"error_rate":  1500,
-					"ttft":        2500,
-					"tpot":        1000,
-					"kv_hit":      1500,
+					MetricQueue:      2000,
+					MetricP95Latency: 1500,
+					MetricErrorRate:  1500,
+					MetricTTFT:       2500,
+					MetricTPOT:       1000,
+					MetricKVHit:      1500,
 				},
 				types.RouteLLMDecode: {
-					"queue":       2000,
-					"p95_latency": 1500,
-					"error_rate":  1500,
-					"ttft":        1000,
-					"tpot":        2500,
-					"kv_hit":      1500,
+					MetricQueue:      2000,
+					MetricP95Latency: 1500,
+					MetricErrorRate:  1500,
+					MetricTTFT:       1000,
+					MetricTPOT:       2500,
+					MetricKVHit:      1500,
 				},
 			},
 		},
@@ -106,7 +141,7 @@ func (c *Config) Validate() error {
 	if c.TopK < 1 || c.TopK > 32 {
 		errs = append(errs, lberrors.NewConfigError(
 			lberrors.CodeInvalidTopK,
-			"top_k",
+			FieldTopK,
 			c.TopK,
 			"must be between 1 and 32",
 		))
@@ -115,7 +150,7 @@ func (c *Config) Validate() error {
 	if len(c.RouteClasses) == 0 {
 		errs = append(errs, lberrors.NewConfigError(
 			lberrors.CodeInvalidRouteClass,
-			"route_classes",
+			FieldRouteClasses,
 			c.RouteClasses,
 			"must not be empty",
 		))
@@ -126,7 +161,7 @@ func (c *Config) Validate() error {
 		if !isValidRouteClass(rc) {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidRouteClass,
-				fmt.Sprintf("route_classes[%d]", i),
+				fmt.Sprintf("%s[%d]", FieldRouteClasses, i),
 				rc,
 				"must be one of generic,llm-prefill,llm-decode",
 			))
@@ -135,7 +170,7 @@ func (c *Config) Validate() error {
 		if _, ok := seenRouteClass[rc]; ok {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidRouteClass,
-				fmt.Sprintf("route_classes[%d]", i),
+				fmt.Sprintf("%s[%d]", FieldRouteClasses, i),
 				rc,
 				"must not contain duplicates",
 			))
@@ -149,7 +184,7 @@ func (c *Config) Validate() error {
 		if !ok || name == "" {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeMissingAlgorithmBinding,
-				fmt.Sprintf("plugins.algorithms.%s", rc),
+				fmt.Sprintf("%s.%s", FieldPluginsAlgorithms, rc),
 				name,
 				"must bind one algorithm per route class",
 			))
@@ -158,7 +193,7 @@ func (c *Config) Validate() error {
 		if !registry.HasAlgorithm(name) {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeMissingAlgorithmBinding,
-				fmt.Sprintf("plugins.algorithms.%s", rc),
+				fmt.Sprintf("%s.%s", FieldPluginsAlgorithms, rc),
 				name,
 				"algorithm is not registered",
 			))
@@ -170,7 +205,7 @@ func (c *Config) Validate() error {
 		if _, ok := seenPolicy[p]; ok {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeDuplicatePolicy,
-				fmt.Sprintf("plugins.policies[%d]", i),
+				fmt.Sprintf("%s[%d]", FieldPluginsPolicies, i),
 				p,
 				"policy must be unique",
 			))
@@ -180,7 +215,7 @@ func (c *Config) Validate() error {
 		if !registry.HasPolicy(p) {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeUnknownPolicy,
-				fmt.Sprintf("plugins.policies[%d]", i),
+				fmt.Sprintf("%s[%d]", FieldPluginsPolicies, i),
 				p,
 				"policy is not registered",
 			))
@@ -191,14 +226,14 @@ func (c *Config) Validate() error {
 		if c.Plugins.Objective.Name == "" {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidObjective,
-				"plugins.objective.name",
+				FieldPluginsObjectiveName,
 				c.Plugins.Objective.Name,
 				"must not be empty when objective is enabled",
 			))
 		} else if !registry.HasObjective(c.Plugins.Objective.Name) {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidObjective,
-				"plugins.objective.name",
+				FieldPluginsObjectiveName,
 				c.Plugins.Objective.Name,
 				"objective is not registered",
 			))
@@ -206,7 +241,7 @@ func (c *Config) Validate() error {
 		if c.Plugins.Objective.TimeoutMs < 1 || c.Plugins.Objective.TimeoutMs > 20 {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidObjectiveTimeout,
-				"plugins.objective.timeout_ms",
+				FieldPluginsObjectiveTimeout,
 				c.Plugins.Objective.TimeoutMs,
 				"must be between 1 and 20",
 			))
@@ -216,7 +251,7 @@ func (c *Config) Validate() error {
 	if len(c.FallbackChain) == 0 {
 		errs = append(errs, lberrors.NewConfigError(
 			lberrors.CodeInvalidFallbackChain,
-			"fallback_chain",
+			FieldFallbackChain,
 			c.FallbackChain,
 			"must not be empty",
 		))
@@ -226,7 +261,7 @@ func (c *Config) Validate() error {
 		if s == "" {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidFallbackChain,
-				fmt.Sprintf("fallback_chain[%d]", i),
+				fmt.Sprintf("%s[%d]", FieldFallbackChain, i),
 				s,
 				"must not be empty",
 			))
@@ -235,17 +270,17 @@ func (c *Config) Validate() error {
 		if _, ok := seenFallback[s]; ok {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidFallbackChain,
-				fmt.Sprintf("fallback_chain[%d]", i),
+				fmt.Sprintf("%s[%d]", FieldFallbackChain, i),
 				s,
 				"must not contain duplicates",
 			))
 			continue
 		}
 		seenFallback[s] = struct{}{}
-		if s != fallbackPolicyRanked && !registry.HasAlgorithm(s) {
+		if s != FallbackPolicyRanked && !registry.HasAlgorithm(s) {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidFallbackChain,
-				fmt.Sprintf("fallback_chain[%d]", i),
+				fmt.Sprintf("%s[%d]", FieldFallbackChain, i),
 				s,
 				"must be policy_ranked or a registered algorithm",
 			))
@@ -257,7 +292,7 @@ func (c *Config) Validate() error {
 		if !ok {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidWeight,
-				fmt.Sprintf("weights.%s", rc),
+				fmt.Sprintf("%s.%s", FieldWeights, rc),
 				nil,
 				"weights must be configured for each route class",
 			))
@@ -268,7 +303,7 @@ func (c *Config) Validate() error {
 			if w < 0 || w > 10000 {
 				errs = append(errs, lberrors.NewConfigError(
 					lberrors.CodeInvalidWeight,
-					fmt.Sprintf("weights.%s.%s", rc, metric),
+					fmt.Sprintf("%s.%s.%s", FieldWeights, rc, metric),
 					w,
 					"must be between 0 and 10000",
 				))
@@ -278,18 +313,18 @@ func (c *Config) Validate() error {
 		if sum != 10000 {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidWeightSum,
-				fmt.Sprintf("weights.%s", rc),
+				fmt.Sprintf("%s.%s", FieldWeights, rc),
 				sum,
 				"weight sum must equal 10000",
 			))
 		}
 
 		if rc == types.RouteLLMPrefill || rc == types.RouteLLMDecode {
-			for _, metric := range []string{"ttft", "tpot", "kv_hit"} {
+			for _, metric := range requiredLLMMetrics {
 				if _, ok := weights[metric]; !ok {
 					errs = append(errs, lberrors.NewConfigError(
 						lberrors.CodeMissingLLMWeights,
-						fmt.Sprintf("weights.%s.%s", rc, metric),
+						fmt.Sprintf("%s.%s.%s", FieldWeights, rc, metric),
 						nil,
 						"llm route classes must include ttft,tpot,kv_hit",
 					))
@@ -329,13 +364,18 @@ func WithFallback(chain ...string) Option {
 }
 
 // WithAlgorithm 设置路由类对应算法。
-func WithAlgorithm(routeClass, pluginName string) Option {
+func WithAlgorithm(routeClass types.RouteClass, pluginName string) Option {
 	return func(c *Config) {
 		if c.Plugins.Algorithms == nil {
 			c.Plugins.Algorithms = make(map[types.RouteClass]string)
 		}
-		c.Plugins.Algorithms[types.RouteClass(routeClass)] = pluginName
+		c.Plugins.Algorithms[routeClass] = pluginName
 	}
+}
+
+// WithAlgorithmString 保留字符串入参版本，兼容旧调用。
+func WithAlgorithmString(routeClass, pluginName string) Option {
+	return WithAlgorithm(types.RouteClass(routeClass), pluginName)
 }
 
 // WithPolicies 设置策略链。
@@ -355,17 +395,21 @@ func WithObjective(name string, timeoutMs int, enabled bool) Option {
 }
 
 // WithWeight 设置某路由类某指标权重。
-func WithWeight(routeClass, metric string, w int) Option {
+func WithWeight(routeClass types.RouteClass, metric string, w int) Option {
 	return func(c *Config) {
-		rc := types.RouteClass(routeClass)
 		if c.Weights.ByRouteClass == nil {
 			c.Weights.ByRouteClass = make(map[types.RouteClass]map[string]int)
 		}
-		if c.Weights.ByRouteClass[rc] == nil {
-			c.Weights.ByRouteClass[rc] = make(map[string]int)
+		if c.Weights.ByRouteClass[routeClass] == nil {
+			c.Weights.ByRouteClass[routeClass] = make(map[string]int)
 		}
-		c.Weights.ByRouteClass[rc][metric] = w
+		c.Weights.ByRouteClass[routeClass][metric] = w
 	}
+}
+
+// WithWeightString 保留字符串入参版本，兼容旧调用。
+func WithWeightString(routeClass, metric string, w int) Option {
+	return WithWeight(types.RouteClass(routeClass), metric, w)
 }
 
 // WithTelemetrySink 设置 telemetry sink。

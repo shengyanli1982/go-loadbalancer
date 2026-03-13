@@ -14,9 +14,6 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
-// fallbackPolicyRanked 表示按策略排序结果直接回退。
-const fallbackPolicyRanked = "policy_ranked"
-
 // Balancer 定义 A2X 路由主接口。
 type Balancer interface {
 	Route(ctx context.Context, req types.RequestContext, nodes []types.NodeSnapshot) (types.Candidate, error)
@@ -204,7 +201,7 @@ func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, fi
 	// 回退链允许混合使用 policy_ranked 和算法名，按配置顺序逐个尝试。
 	for _, step := range b.cfg.FallbackChain {
 		switch step {
-		case fallbackPolicyRanked:
+		case config.FallbackPolicyRanked:
 			if len(ranked) == 0 {
 				continue
 			}

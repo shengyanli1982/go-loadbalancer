@@ -14,6 +14,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/config"
 	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
 	"github.com/shengyanli1982/go-loadbalancer/plugin/objective"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/policy/tenantquota"
 	"github.com/shengyanli1982/go-loadbalancer/registry"
 	"github.com/shengyanli1982/go-loadbalancer/telemetry"
 	"github.com/shengyanli1982/go-loadbalancer/types"
@@ -43,7 +44,7 @@ func (panicSink) OnEvent(_ telemetry.TelemetryEvent) {
 // TestRouteSuccess 验证基础路由成功场景。
 func TestRouteSuccess(t *testing.T) {
 	cfg := config.DefaultConfig()
-	b, err := balancer.New(cfg, config.WithAlgorithm(string(types.RouteGeneric), "least_request"))
+	b, err := balancer.New(cfg, config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest))
 	require.NoError(t, err)
 
 	req := types.RequestContext{RouteClass: types.RouteGeneric}
@@ -73,15 +74,15 @@ func TestRouteFallbackOnPolicyError(t *testing.T) {
 	cfg := config.DefaultConfig()
 	b, err := balancer.New(
 		cfg,
-		config.WithAlgorithm(string(types.RouteGeneric), "least_request"),
-		config.WithPolicies("tenant_quota"),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyTenantQuota),
 	)
 	require.NoError(t, err)
 
 	req := types.RequestContext{
 		RouteClass: types.RouteGeneric,
 		Metadata: map[string]string{
-			"tenant_quota_max_inflight": "not-an-int",
+			tenantquota.MetadataMaxInflightKey: "not-an-int",
 		},
 	}
 	nodes := []types.NodeSnapshot{{NodeID: "n1", Healthy: true, Inflight: 2}}
@@ -101,7 +102,7 @@ func TestRouteFallbackOnObjectiveTimeout(t *testing.T) {
 	cfg := config.DefaultConfig()
 	b, err := balancer.New(
 		cfg,
-		config.WithAlgorithm(string(types.RouteGeneric), "least_request"),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
 		config.WithObjective("slow_objective", 1, true),
 	)
 	require.NoError(t, err)
@@ -120,7 +121,7 @@ func TestRouteTelemetryPanicDoesNotBreakFlow(t *testing.T) {
 	cfg := config.DefaultConfig()
 	b, err := balancer.New(
 		cfg,
-		config.WithAlgorithm(string(types.RouteGeneric), "least_request"),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
 		config.WithTelemetrySink(panicSink{}),
 	)
 	require.NoError(t, err)

@@ -12,11 +12,11 @@ import (
 
 const (
 	// pluginName 是 tenant_quota 插件注册名。
-	pluginName          = "tenant_quota"
-	// metadataMaxInflight 表示每租户最大并发上限字段。
-	metadataMaxInflight = "tenant_quota_max_inflight"
-	// metadataMaxQueue 表示每租户最大排队上限字段。
-	metadataMaxQueue    = "tenant_quota_max_queue"
+	pluginName = "tenant_quota"
+	// MetadataMaxInflightKey 表示每租户最大并发上限字段。
+	MetadataMaxInflightKey = "tenant_quota_max_inflight"
+	// MetadataMaxQueueKey 表示每租户最大排队上限字段。
+	MetadataMaxQueueKey = "tenant_quota_max_queue"
 )
 
 // Plugin 实现租户配额策略。
@@ -72,25 +72,25 @@ func parseQuota(metadata map[string]string) (maxInflight, maxQueue int, enabled 
 		return 0, 0, false, nil
 	}
 	// 配额字段允许缺省；只有出现字段才启用该策略。
-	if value, ok := metadata[metadataMaxInflight]; ok {
+	if value, ok := metadata[MetadataMaxInflightKey]; ok {
 		enabled = true
 		parsed, parseErr := strconv.Atoi(value)
 		if parseErr != nil {
-			return 0, 0, false, fmt.Errorf("metadata[%s]=%q: %w", metadataMaxInflight, value, lberrors.ErrPluginMisconfigured)
+			return 0, 0, false, fmt.Errorf("metadata[%s]=%q: %w", MetadataMaxInflightKey, value, lberrors.ErrPluginMisconfigured)
 		}
 		if parsed < 0 {
-			return 0, 0, false, fmt.Errorf("metadata[%s]=%q: %w", metadataMaxInflight, value, lberrors.ErrPluginMisconfigured)
+			return 0, 0, false, fmt.Errorf("metadata[%s]=%q: %w", MetadataMaxInflightKey, value, lberrors.ErrPluginMisconfigured)
 		}
 		maxInflight = parsed
 	}
-	if value, ok := metadata[metadataMaxQueue]; ok {
+	if value, ok := metadata[MetadataMaxQueueKey]; ok {
 		enabled = true
 		parsed, parseErr := strconv.Atoi(value)
 		if parseErr != nil {
-			return 0, 0, false, fmt.Errorf("metadata[%s]=%q: %w", metadataMaxQueue, value, lberrors.ErrPluginMisconfigured)
+			return 0, 0, false, fmt.Errorf("metadata[%s]=%q: %w", MetadataMaxQueueKey, value, lberrors.ErrPluginMisconfigured)
 		}
 		if parsed < 0 {
-			return 0, 0, false, fmt.Errorf("metadata[%s]=%q: %w", metadataMaxQueue, value, lberrors.ErrPluginMisconfigured)
+			return 0, 0, false, fmt.Errorf("metadata[%s]=%q: %w", MetadataMaxQueueKey, value, lberrors.ErrPluginMisconfigured)
 		}
 		maxQueue = parsed
 	}
