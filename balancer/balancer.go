@@ -170,12 +170,21 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 		candidate, err := plugin.Choose(req, candidates)
 		resCh <- result{candidate: candidate, err: err}
 	}()
+	timer := time.NewTimer(timeout)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
 
 	select {
 	case <-ctx.Done():
 		return types.Candidate{}, ctx.Err()
 	// 超时视为插件失败，交给上层 fallback 处理。
-	case <-time.After(timeout):
+	case <-timer.C:
 		return types.Candidate{}, fmt.Errorf("objective=%s timeout=%s: %w", objectiveName, timeout, lberrors.ErrPluginTimeout)
 	case res := <-resCh:
 		if res.err != nil {

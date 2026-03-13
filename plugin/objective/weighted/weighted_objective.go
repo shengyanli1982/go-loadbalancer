@@ -11,6 +11,39 @@ import (
 
 const pluginName = "weighted_objective"
 
+type scoreWeights struct {
+	queue      float64
+	p95Latency float64
+	errorRate  float64
+	ttft       float64
+	tpot       float64
+	kvHit      float64
+}
+
+var (
+	genericWeights = scoreWeights{
+		queue:      0.5,
+		p95Latency: 0.3,
+		errorRate:  0.2,
+	}
+	llmPrefillWeights = scoreWeights{
+		queue:      0.20,
+		p95Latency: 0.15,
+		errorRate:  0.15,
+		ttft:       0.25,
+		tpot:       0.10,
+		kvHit:      0.15,
+	}
+	llmDecodeWeights = scoreWeights{
+		queue:      0.20,
+		p95Latency: 0.15,
+		errorRate:  0.15,
+		ttft:       0.10,
+		tpot:       0.25,
+		kvHit:      0.15,
+	}
+)
+
 // Plugin 实现加权目标函数。
 type Plugin struct{}
 
@@ -40,36 +73,19 @@ func (Plugin) Choose(req types.RequestContext, candidates []types.Candidate) (ty
 }
 
 func weightedScore(routeClass types.RouteClass, node types.NodeSnapshot) float64 {
-	weights := map[string]float64{
-		"queue":       0.5,
-		"p95_latency": 0.3,
-		"error_rate":  0.2,
-		"ttft":        0.0,
-		"tpot":        0.0,
-		"kv_hit":      0.0,
-	}
+	weights := genericWeights
 	switch routeClass {
 	case types.RouteLLMPrefill:
-		weights["queue"] = 0.20
-		weights["p95_latency"] = 0.15
-		weights["error_rate"] = 0.15
-		weights["ttft"] = 0.25
-		weights["tpot"] = 0.10
-		weights["kv_hit"] = 0.15
+		weights = llmPrefillWeights
 	case types.RouteLLMDecode:
-		weights["queue"] = 0.20
-		weights["p95_latency"] = 0.15
-		weights["error_rate"] = 0.15
-		weights["ttft"] = 0.10
-		weights["tpot"] = 0.25
-		weights["kv_hit"] = 0.15
+		weights = llmDecodeWeights
 	}
-	return weights["queue"]*float64(node.QueueDepth) +
-		weights["p95_latency"]*node.P95LatencyMs +
-		weights["error_rate"]*node.ErrorRate*100 +
-		weights["ttft"]*node.TTFTMs +
-		weights["tpot"]*node.TPOTMs -
-		weights["kv_hit"]*node.KVCacheHitRate*100
+	return weights.queue*float64(node.QueueDepth) +
+		weights.p95Latency*node.P95LatencyMs +
+		weights.errorRate*node.ErrorRate*100 +
+		weights.ttft*node.TTFTMs +
+		weights.tpot*node.TPOTMs -
+		weights.kvHit*node.KVCacheHitRate*100
 }
 
 func almostEqual(a, b float64) bool {

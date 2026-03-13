@@ -2,10 +2,10 @@ package leastrequest
 
 import (
 	"fmt"
-	"sort"
 
 	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
 	"github.com/shengyanli1982/go-loadbalancer/plugin/algorithm"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/algorithm/internal/selectutil"
 	"github.com/shengyanli1982/go-loadbalancer/registry"
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
@@ -31,32 +31,13 @@ func (Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapsho
 		return nil, lberrors.ErrNoCandidate
 	}
 
-	copied := append([]types.NodeSnapshot(nil), nodes...)
-	sort.Slice(copied, func(i, j int) bool {
-		if copied[i].Inflight != copied[j].Inflight {
-			return copied[i].Inflight < copied[j].Inflight
-		}
-		if copied[i].QueueDepth != copied[j].QueueDepth {
-			return copied[i].QueueDepth < copied[j].QueueDepth
-		}
-		if copied[i].P95LatencyMs != copied[j].P95LatencyMs {
-			return copied[i].P95LatencyMs < copied[j].P95LatencyMs
-		}
-		if copied[i].ErrorRate != copied[j].ErrorRate {
-			return copied[i].ErrorRate < copied[j].ErrorRate
-		}
-		return copied[i].NodeID < copied[j].NodeID
-	})
-
-	limit := topK
-	if limit > len(copied) {
-		limit = len(copied)
-	}
+	selected := selectutil.SelectTopK(nodes, topK)
+	limit := len(selected)
 	out := make([]types.Candidate, 0, limit)
 	for i := 0; i < limit; i++ {
 		out = append(out, types.Candidate{
-			Node:  copied[i],
-			Score: float64(copied[i].Inflight*10000 + copied[i].QueueDepth*100),
+			Node:  selected[i],
+			Score: float64(selected[i].Inflight*10000 + selected[i].QueueDepth*100),
 			Reason: []string{
 				"algorithm=least_request",
 				"sorted_by_inflight_queue_latency_error",

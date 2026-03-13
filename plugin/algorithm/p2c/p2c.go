@@ -3,10 +3,10 @@ package p2c
 import (
 	"fmt"
 	"hash/fnv"
-	"sort"
 
 	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
 	"github.com/shengyanli1982/go-loadbalancer/plugin/algorithm"
+	"github.com/shengyanli1982/go-loadbalancer/plugin/algorithm/internal/selectutil"
 	"github.com/shengyanli1982/go-loadbalancer/registry"
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
@@ -32,8 +32,8 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 		return nil, lberrors.ErrNoCandidate
 	}
 
-	selected := make([]types.Candidate, 0, min(topK, len(nodes)))
-	used := make(map[string]struct{}, len(nodes))
+	limit := min(topK, len(nodes))
+	selected := make([]types.Candidate, 0, limit)
 
 	// 先按 P2C 选出首个候选，后续候选按统一比较器补齐。
 	first := pickByTwoChoices(req, nodes)
@@ -45,23 +45,12 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 			"p2c_selected_from_two_choices",
 		},
 	})
-	used[first.NodeID] = struct{}{}
-
-	remaining := make([]types.NodeSnapshot, 0, len(nodes)-1)
-	for _, node := range nodes {
-		if _, ok := used[node.NodeID]; ok {
-			continue
-		}
-		remaining = append(remaining, node)
+	if limit == 1 {
+		return selected, nil
 	}
-	sort.Slice(remaining, func(i, j int) bool {
-		return lessNode(remaining[i], remaining[j])
-	})
 
+	remaining := selectutil.SelectTopKExcludeNodeID(nodes, first.NodeID, limit-1)
 	for _, node := range remaining {
-		if len(selected) >= topK {
-			break
-		}
 		selected = append(selected, types.Candidate{
 			Node:  node,
 			Score: nodeScore(node),
@@ -86,7 +75,7 @@ func pickByTwoChoices(req types.RequestContext, nodes []types.NodeSnapshot) type
 		j = (j + 1) % len(nodes)
 	}
 	a, b := nodes[i], nodes[j]
-	if lessNode(a, b) {
+	if selectutil.LessNode(a, b) {
 		return a
 	}
 	return b
@@ -99,22 +88,6 @@ func hashRequest(req types.RequestContext) uint64 {
 	_, _ = h.Write([]byte(req.TenantID))
 	_, _ = h.Write([]byte(req.Model))
 	return h.Sum64()
-}
-
-func lessNode(a, b types.NodeSnapshot) bool {
-	if a.Inflight != b.Inflight {
-		return a.Inflight < b.Inflight
-	}
-	if a.QueueDepth != b.QueueDepth {
-		return a.QueueDepth < b.QueueDepth
-	}
-	if a.P95LatencyMs != b.P95LatencyMs {
-		return a.P95LatencyMs < b.P95LatencyMs
-	}
-	if a.ErrorRate != b.ErrorRate {
-		return a.ErrorRate < b.ErrorRate
-	}
-	return a.NodeID < b.NodeID
 }
 
 func nodeScore(node types.NodeSnapshot) float64 {
