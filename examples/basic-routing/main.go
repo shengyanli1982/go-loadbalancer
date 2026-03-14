@@ -30,29 +30,26 @@ func main() {
 		RouteClass: types.RouteGeneric,
 		Model:      "model-a",
 	}
+	modelASet := types.NewModelCapabilitySet(map[string]bool{"model-a": true})
 
 	nodes := []types.NodeSnapshot{
 		{
-			NodeID:       "node-a",
-			Healthy:      true,
-			Inflight:     8,
-			QueueDepth:   4,
-			P95LatencyMs: 35,
-			ErrorRate:    0.003,
-			ModelAvailability: map[string]bool{
-				"model-a": true,
-			},
+			NodeID:          "node-a",
+			Healthy:         true,
+			Inflight:        8,
+			QueueDepth:      4,
+			P95LatencyMs:    35,
+			ErrorRate:       0.003,
+			ModelCapability: modelASet,
 		},
 		{
-			NodeID:       "node-b",
-			Healthy:      true,
-			Inflight:     3,
-			QueueDepth:   1,
-			P95LatencyMs: 18,
-			ErrorRate:    0.001,
-			ModelAvailability: map[string]bool{
-				"model-a": true,
-			},
+			NodeID:          "node-b",
+			Healthy:         true,
+			Inflight:        3,
+			QueueDepth:      1,
+			P95LatencyMs:    18,
+			ErrorRate:       0.001,
+			ModelCapability: modelASet,
 		},
 	}
 
@@ -62,4 +59,3 @@ func main() {
 	}
 	fmt.Printf("chosen=%s score=%.2f reason=%v\n", chosen.Node.NodeID, chosen.Score, chosen.Reason)
 }
-

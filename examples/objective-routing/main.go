@@ -31,31 +31,32 @@ func main() {
 		RouteClass: types.RouteLLMPrefill,
 		Model:      "model-a",
 	}
+	modelASet := types.NewModelCapabilitySet(map[string]bool{"model-a": true})
 
 	nodes := []types.NodeSnapshot{
 		{
-			NodeID:            "node-p1",
-			Healthy:           true,
-			Inflight:          4,
-			QueueDepth:        3,
-			P95LatencyMs:      35,
-			ErrorRate:         0.004,
-			TTFTMs:            120,
-			TPOTMs:            16,
-			KVCacheHitRate:    0.72,
-			ModelAvailability: map[string]bool{"model-a": true},
+			NodeID:          "node-p1",
+			Healthy:         true,
+			Inflight:        4,
+			QueueDepth:      3,
+			P95LatencyMs:    35,
+			ErrorRate:       0.004,
+			TTFTMs:          120,
+			TPOTMs:          16,
+			KVCacheHitRate:  0.72,
+			ModelCapability: modelASet,
 		},
 		{
-			NodeID:            "node-p2",
-			Healthy:           true,
-			Inflight:          6,
-			QueueDepth:        1,
-			P95LatencyMs:      22,
-			ErrorRate:         0.002,
-			TTFTMs:            90,
-			TPOTMs:            19,
-			KVCacheHitRate:    0.81,
-			ModelAvailability: map[string]bool{"model-a": true},
+			NodeID:          "node-p2",
+			Healthy:         true,
+			Inflight:        6,
+			QueueDepth:      1,
+			P95LatencyMs:    22,
+			ErrorRate:       0.002,
+			TTFTMs:          90,
+			TPOTMs:          19,
+			KVCacheHitRate:  0.81,
+			ModelCapability: modelASet,
 		},
 	}
 
@@ -65,4 +66,3 @@ func main() {
 	}
 	fmt.Printf("chosen=%s score=%.2f reason=%v\n", chosen.Node.NodeID, chosen.Score, chosen.Reason)
 }
-
