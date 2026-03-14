@@ -47,13 +47,18 @@ func (p *Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnap
 	}
 	start := int(atomic.AddUint64(&p.next, 1)-1) % len(nodes)
 
+	reasonBuffer := make([]string, limit*2)
 	out := make([]types.Candidate, 0, limit)
 	for i := 0; i < limit; i++ {
 		idx := (start + i) % len(nodes)
+		reasonOffset := i * 2
+		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+2]
+		reason[0] = reasonAlgorithmRR
+		reason[1] = reasonRotation
 		out = append(out, types.Candidate{
 			Node:   nodes[idx],
 			Score:  float64(i),
-			Reason: []string{reasonAlgorithmRR, reasonRotation},
+			Reason: reason,
 		})
 	}
 	return out, nil

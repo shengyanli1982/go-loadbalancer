@@ -20,7 +20,6 @@ const (
 	reasonAlgorithmP2C         = "algorithm=p2c"
 	reasonP2CFromTwoChoices    = "p2c_selected_from_two_choices"
 	reasonSelectedFromResidual = "selected_from_sorted_residual"
-	reasonCapacity             = 4
 )
 
 // Plugin 实现 p2c 算法。
@@ -46,39 +45,43 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 
 	limit := min(topK, len(nodes))
 	selected := make([]types.Candidate, 0, limit)
+	reasonBuffer := make([]string, limit*2)
 
 	// 先按 P2C 选出首个候选，后续候选按统一比较器补齐。
-	first := pickByTwoChoices(req, nodes)
-	firstReason := make([]string, 2, reasonCapacity)
+	firstIdx := pickByTwoChoicesIndex(req, nodes)
+	first := nodes[firstIdx]
+	firstReason := reasonBuffer[:2:2]
 	firstReason[0] = reasonAlgorithmP2C
 	firstReason[1] = reasonP2CFromTwoChoices
 	selected = append(selected, types.Candidate{
 		Node:   first,
-		Score:  nodeScore(first),
+		Score:  nodeScorePtr(&first),
 		Reason: firstReason,
 	})
 	if limit == 1 {
 		return selected, nil
 	}
 
-	remaining := selectutil.SelectTopKExcludeNodeID(nodes, first.NodeID, limit-1)
-	for _, node := range remaining {
-		reason := make([]string, 2, reasonCapacity)
+	remaining := selectutil.SelectTopKExcludeNodeIDIndices(nodes, first.NodeID, limit-1)
+	for _, idx := range remaining {
+		node := nodes[idx]
+		reasonOffset := len(selected) * 2
+		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+2]
 		reason[0] = reasonAlgorithmP2C
 		reason[1] = reasonSelectedFromResidual
 		selected = append(selected, types.Candidate{
 			Node:   node,
-			Score:  nodeScore(node),
+			Score:  nodeScorePtr(&node),
 			Reason: reason,
 		})
 	}
 	return selected, nil
 }
 
-// pickByTwoChoices 从两次哈希命中的节点中选出更优者。
-func pickByTwoChoices(req types.RequestContext, nodes []types.NodeSnapshot) types.NodeSnapshot {
+// pickByTwoChoicesIndex 从两次哈希命中的节点中选出更优者下标。
+func pickByTwoChoicesIndex(req types.RequestContext, nodes []types.NodeSnapshot) int {
 	if len(nodes) == 1 {
-		return nodes[0]
+		return 0
 	}
 	// 使用请求哈希生成两个下标，保证相同请求分布相对稳定。
 	h := hashRequest(req)
@@ -89,9 +92,9 @@ func pickByTwoChoices(req types.RequestContext, nodes []types.NodeSnapshot) type
 	}
 	a, b := nodes[i], nodes[j]
 	if selectutil.LessNode(a, b) {
-		return a
+		return i
 	}
-	return b
+	return j
 }
 
 // hashRequest 将请求关键字段哈希为稳定的 uint64 值。
@@ -112,8 +115,8 @@ func hashString64a(h uint64, s string) uint64 {
 	return h
 }
 
-// nodeScore 计算节点在候选输出中的展示分值。
-func nodeScore(node types.NodeSnapshot) float64 {
+// nodeScorePtr 计算节点在候选输出中的展示分值。
+func nodeScorePtr(node *types.NodeSnapshot) float64 {
 	return float64(node.Inflight*10000+node.QueueDepth*100) + node.P95LatencyMs + node.ErrorRate*1000
 }
 

@@ -40,8 +40,8 @@ func (Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapsho
 		return nil, lberrors.ErrNoCandidate
 	}
 
-	selected := selectutil.SelectTopK(nodes, topK)
-	limit := len(selected)
+	selectedIdx := selectutil.SelectTopKIndices(nodes, topK)
+	limit := len(selectedIdx)
 	out := make([]types.Candidate, 0, limit)
 	reasonBuffer := make([]string, limit*reasonCapacity)
 	for i := 0; i < limit; i++ {
@@ -50,7 +50,7 @@ func (Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapsho
 		reason[0] = reasonAlgorithmLeastRequest
 		reason[1] = reasonSortedByInflightQueueError
 
-		node := selected[i]
+		node := nodes[selectedIdx[i]]
 		out = append(out, types.Candidate{
 			Node:   node,
 			Score:  float64(node.Inflight*10000 + node.QueueDepth*100),
