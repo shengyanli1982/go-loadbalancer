@@ -23,8 +23,9 @@ func (Plugin) Name() string {
 
 // ReRank 过滤掉不健康节点并保持剩余候选相对顺序。
 func (Plugin) ReRank(_ types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
-	filtered := make([]types.Candidate, 0, len(candidates))
-	for _, candidate := range candidates {
+	filtered := candidates[:0]
+	for i := range candidates {
+		candidate := candidates[i]
 		if !candidate.Node.Healthy {
 			continue
 		}

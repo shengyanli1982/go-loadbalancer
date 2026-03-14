@@ -65,13 +65,13 @@ Benchmark environment (measured on 2026-03-14):
 
 | Benchmark                                                |  ns/op |  B/op | allocs/op |
 | -------------------------------------------------------- | -----: | ----: | --------: |
-| `BenchmarkRoute/serial_nodes_32`                         |   1646 |  2816 |         8 |
-| `BenchmarkRoute/serial_nodes_256`                        |   9077 |  2816 |         8 |
-| `BenchmarkRoute/serial_nodes_1024`                       |  34308 |  2816 |         8 |
-| `BenchmarkRoute/parallel_nodes_256`                      |   2180 |  2816 |         8 |
-| `BenchmarkRoute/serial_default_config_nodes_256`         |   8845 |  3712 |        10 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |  11950 |  3672 |        15 |
-| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |  20043 |  2841 |         9 |
+| `BenchmarkRoute/serial_nodes_32`                         |   1511 |  1920 |         7 |
+| `BenchmarkRoute/serial_nodes_256`                        |   9331 |  1920 |         7 |
+| `BenchmarkRoute/serial_nodes_1024`                       |  34908 |  1920 |         7 |
+| `BenchmarkRoute/parallel_nodes_256`                      |   2017 |  1920 |         7 |
+| `BenchmarkRoute/serial_default_config_nodes_256`         |   9198 |  1920 |         8 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |  13024 |  2776 |        14 |
+| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |  19921 |  1945 |         8 |
 | `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`)     |  365.8 |  1664 |         9 |
 | `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`)    |  19608 |  2688 |        10 |
 | `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`)     | 183983 | 29152 |        14 |

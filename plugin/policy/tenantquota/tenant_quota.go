@@ -42,15 +42,15 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 		return nil, err
 	}
 	if !enabled {
-		out := append([]types.Candidate(nil), candidates...)
-		for i := range out {
-			out[i].Reason = append(out[i].Reason, "policy=tenant_quota_skipped")
+		for i := range candidates {
+			candidates[i].Reason = append(candidates[i].Reason, "policy=tenant_quota_skipped")
 		}
-		return out, nil
+		return candidates, nil
 	}
 
-	out := make([]types.Candidate, 0, len(candidates))
-	for _, candidate := range candidates {
+	out := candidates[:0]
+	for i := range candidates {
+		candidate := candidates[i]
 		if maxInflight > 0 && candidate.Node.Inflight > maxInflight {
 			continue
 		}
