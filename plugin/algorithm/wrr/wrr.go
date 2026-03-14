@@ -22,8 +22,16 @@ const (
 
 // Plugin 实现 smooth weighted round robin 算法。
 type Plugin struct {
-	mu       sync.Mutex
-	currents map[string]int
+	mu    sync.Mutex
+	state topologyState
+}
+
+type topologyState struct {
+	nodeIDs     []string
+	weights     []int
+	currents    []int
+	canonical   []int
+	totalWeight int
 }
 
 func init() {
@@ -52,51 +60,24 @@ func (p *Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnap
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.currents == nil {
-		p.currents = make(map[string]int, len(nodes))
-	}
+	p.ensureState(nodes)
 
-	active := make(map[string]struct{}, len(nodes))
-	weights := make(map[string]int, len(nodes))
-	totalWeight := 0
-	for _, node := range nodes {
-		active[node.NodeID] = struct{}{}
-		w := effectiveWeight(node)
-		weights[node.NodeID] = w
-		totalWeight += w
-		if _, ok := p.currents[node.NodeID]; !ok {
-			p.currents[node.NodeID] = 0
-		}
-	}
-	for nodeID := range p.currents {
-		if _, ok := active[nodeID]; !ok {
-			delete(p.currents, nodeID)
-		}
-	}
-	if totalWeight <= 0 {
-		totalWeight = len(nodes)
-	}
-
-	selected := make(map[string]struct{}, limit)
+	selectedCanonical := make([]bool, len(nodes))
 	out := make([]types.Candidate, 0, limit)
-	maxSteps := len(nodes) * (limit + 2)
-
-	for step := 0; len(out) < limit && step < maxSteps; step++ {
+	for len(out) < limit {
 		bestIdx := -1
-		bestID := ""
 		bestCurrent := 0
 
 		for i := 0; i < len(nodes); i++ {
-			nodeID := nodes[i].NodeID
-			if _, exists := selected[nodeID]; exists {
+			canonicalIdx := p.state.canonical[i]
+			if selectedCanonical[canonicalIdx] {
 				continue
 			}
 
-			p.currents[nodeID] += weights[nodeID]
-			current := p.currents[nodeID]
-			if bestIdx == -1 || current > bestCurrent || (current == bestCurrent && nodeID < bestID) {
+			p.state.currents[i] += p.state.weights[i]
+			current := p.state.currents[i]
+			if bestIdx == -1 || current > bestCurrent || (current == bestCurrent && p.state.nodeIDs[i] < p.state.nodeIDs[bestIdx]) {
 				bestIdx = i
-				bestID = nodeID
 				bestCurrent = current
 			}
 		}
@@ -104,11 +85,11 @@ func (p *Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnap
 			break
 		}
 
-		p.currents[bestID] -= totalWeight
-		selected[bestID] = struct{}{}
+		p.state.currents[bestIdx] -= p.state.totalWeight
+		selectedCanonical[p.state.canonical[bestIdx]] = true
 		out = append(out, types.Candidate{
 			Node:   nodes[bestIdx],
-			Score:  float64(weights[bestID]),
+			Score:  float64(p.state.weights[bestIdx]),
 			Reason: []string{reasonAlgorithmWRR, reasonSmoothWeightedRR},
 		})
 	}
@@ -117,25 +98,27 @@ func (p *Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnap
 		return out, nil
 	}
 
-	remaining := make([]types.NodeSnapshot, 0, len(nodes)-len(out))
-	for _, node := range nodes {
-		if _, exists := selected[node.NodeID]; exists {
+	remaining := make([]int, 0, len(nodes)-len(out))
+	for i := 0; i < len(nodes); i++ {
+		if selectedCanonical[p.state.canonical[i]] {
 			continue
 		}
-		remaining = append(remaining, node)
+		remaining = append(remaining, i)
 	}
 	sort.Slice(remaining, func(i, j int) bool {
-		wi := effectiveWeight(remaining[i])
-		wj := effectiveWeight(remaining[j])
+		wi := p.state.weights[remaining[i]]
+		wj := p.state.weights[remaining[j]]
 		if wi != wj {
 			return wi > wj
 		}
-		return remaining[i].NodeID < remaining[j].NodeID
+		return p.state.nodeIDs[remaining[i]] < p.state.nodeIDs[remaining[j]]
 	})
 	for i := 0; i < len(remaining) && len(out) < limit; i++ {
+		idx := remaining[i]
+		selectedCanonical[p.state.canonical[idx]] = true
 		out = append(out, types.Candidate{
-			Node:   remaining[i],
-			Score:  float64(effectiveWeight(remaining[i])),
+			Node:   nodes[idx],
+			Score:  float64(p.state.weights[idx]),
 			Reason: []string{reasonAlgorithmWRR, reasonWeightFallback},
 		})
 	}
@@ -148,6 +131,47 @@ func effectiveWeight(node types.NodeSnapshot) int {
 		return 1
 	}
 	return node.StaticWeight
+}
+
+func (p *Plugin) ensureState(nodes []types.NodeSnapshot) {
+	if len(p.state.nodeIDs) == len(nodes) {
+		same := true
+		for i := 0; i < len(nodes); i++ {
+			if p.state.nodeIDs[i] != nodes[i].NodeID || p.state.weights[i] != effectiveWeight(nodes[i]) {
+				same = false
+				break
+			}
+		}
+		if same {
+			return
+		}
+	}
+
+	n := len(nodes)
+	state := topologyState{
+		nodeIDs:   make([]string, n),
+		weights:   make([]int, n),
+		currents:  make([]int, n),
+		canonical: make([]int, n),
+	}
+	total := 0
+	firstIndexByNodeID := make(map[string]int, n)
+	for i := 0; i < n; i++ {
+		state.nodeIDs[i] = nodes[i].NodeID
+		state.weights[i] = effectiveWeight(nodes[i])
+		if first, ok := firstIndexByNodeID[state.nodeIDs[i]]; ok {
+			state.canonical[i] = first
+		} else {
+			firstIndexByNodeID[state.nodeIDs[i]] = i
+			state.canonical[i] = i
+		}
+		total += state.weights[i]
+	}
+	if total <= 0 {
+		total = n
+	}
+	state.totalWeight = total
+	p.state = state
 }
 
 var _ algorithm.Plugin = (*Plugin)(nil)

@@ -64,14 +64,14 @@ func (p *Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSn
 		return nil, lberrors.ErrNoCandidate
 	}
 
-	keys, nodeByID := canonicalNodeKeys(nodes)
-	if len(nodeByID) == 0 {
+	keys := canonicalNodeKeys(nodes)
+	if len(keys) == 0 {
 		return nil, lberrors.ErrNoCandidate
 	}
 
 	limit := topK
-	if limit > len(nodeByID) {
-		limit = len(nodeByID)
+	if limit > len(keys) {
+		limit = len(keys)
 	}
 
 	ring := p.loadOrBuildRing(keys)
@@ -85,19 +85,19 @@ func (p *Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSn
 		start = 0
 	}
 
-	selected := make(map[string]struct{}, limit)
+	selectedIDs := make([]string, 0, limit)
 	out := make([]types.Candidate, 0, limit)
 	for i := 0; i < len(ring) && len(out) < limit; i++ {
 		idx := (start + i) % len(ring)
 		nodeID := ring[idx].nodeID
-		if _, exists := selected[nodeID]; exists {
+		if containsNodeID(selectedIDs, nodeID) {
 			continue
 		}
-		node, ok := nodeByID[nodeID]
+		node, ok := findNodeByID(nodes, nodeID)
 		if !ok {
 			continue
 		}
-		selected[nodeID] = struct{}{}
+		selectedIDs = append(selectedIDs, nodeID)
 		out = append(out, types.Candidate{
 			Node:   node,
 			Score:  float64(ring[idx].hash),
@@ -168,31 +168,37 @@ func replicasForWeight(weight int) int {
 	return replicas
 }
 
-func canonicalNodeKeys(nodes []types.NodeSnapshot) ([]nodeKey, map[string]types.NodeSnapshot) {
-	nodeByID := make(map[string]types.NodeSnapshot, len(nodes))
-	weightByID := make(map[string]int, len(nodes))
+func canonicalNodeKeys(nodes []types.NodeSnapshot) []nodeKey {
+	keys := make([]nodeKey, 0, len(nodes))
 	for _, node := range nodes {
 		if node.NodeID == "" {
 			continue
 		}
-		nodeByID[node.NodeID] = node
-		weightByID[node.NodeID] = effectiveWeight(node)
-	}
-
-	keys := make([]nodeKey, 0, len(weightByID))
-	for nodeID, weight := range weightByID {
 		keys = append(keys, nodeKey{
-			nodeID: nodeID,
-			weight: weight,
+			nodeID: node.NodeID,
+			weight: effectiveWeight(node),
 		})
 	}
+	if len(keys) == 0 {
+		return nil
+	}
+
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i].nodeID != keys[j].nodeID {
 			return keys[i].nodeID < keys[j].nodeID
 		}
-		return keys[i].weight < keys[j].weight
+		return keys[i].weight > keys[j].weight
 	})
-	return keys, nodeByID
+
+	// 去重：同 nodeID 仅保留第一个（更高权重优先）。
+	uniq := keys[:1]
+	for i := 1; i < len(keys); i++ {
+		if keys[i].nodeID == keys[i-1].nodeID {
+			continue
+		}
+		uniq = append(uniq, keys[i])
+	}
+	return uniq
 }
 
 func keysEqual(a, b []nodeKey) bool {
@@ -212,6 +218,24 @@ func effectiveWeight(node types.NodeSnapshot) int {
 		return 1
 	}
 	return node.StaticWeight
+}
+
+func containsNodeID(selectedIDs []string, nodeID string) bool {
+	for i := 0; i < len(selectedIDs); i++ {
+		if selectedIDs[i] == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
+func findNodeByID(nodes []types.NodeSnapshot, nodeID string) (types.NodeSnapshot, bool) {
+	for i := 0; i < len(nodes); i++ {
+		if nodes[i].NodeID == nodeID {
+			return nodes[i], true
+		}
+	}
+	return types.NodeSnapshot{}, false
 }
 
 func hashRequestKey(req types.RequestContext) uint64 {
