@@ -2,7 +2,6 @@ package p2c
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
 	"github.com/shengyanli1982/go-loadbalancer/plugin/algorithm"
@@ -13,6 +12,16 @@ import (
 
 // pluginName 是 p2c 插件注册名。
 const pluginName = "p2c"
+
+const (
+	fnvOffset64 = 14695981039346656037
+	fnvPrime64  = 1099511628211
+
+	reasonAlgorithmP2C         = "algorithm=p2c"
+	reasonP2CFromTwoChoices    = "p2c_selected_from_two_choices"
+	reasonSelectedFromResidual = "selected_from_sorted_residual"
+	reasonCapacity             = 4
+)
 
 // Plugin 实现 p2c 算法。
 type Plugin struct{}
@@ -40,13 +49,13 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 
 	// 先按 P2C 选出首个候选，后续候选按统一比较器补齐。
 	first := pickByTwoChoices(req, nodes)
+	firstReason := make([]string, 2, reasonCapacity)
+	firstReason[0] = reasonAlgorithmP2C
+	firstReason[1] = reasonP2CFromTwoChoices
 	selected = append(selected, types.Candidate{
-		Node:  first,
-		Score: nodeScore(first),
-		Reason: []string{
-			"algorithm=p2c",
-			"p2c_selected_from_two_choices",
-		},
+		Node:   first,
+		Score:  nodeScore(first),
+		Reason: firstReason,
 	})
 	if limit == 1 {
 		return selected, nil
@@ -54,13 +63,13 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 
 	remaining := selectutil.SelectTopKExcludeNodeID(nodes, first.NodeID, limit-1)
 	for _, node := range remaining {
+		reason := make([]string, 2, reasonCapacity)
+		reason[0] = reasonAlgorithmP2C
+		reason[1] = reasonSelectedFromResidual
 		selected = append(selected, types.Candidate{
-			Node:  node,
-			Score: nodeScore(node),
-			Reason: []string{
-				"algorithm=p2c",
-				"selected_from_sorted_residual",
-			},
+			Node:   node,
+			Score:  nodeScore(node),
+			Reason: reason,
 		})
 	}
 	return selected, nil
@@ -87,12 +96,20 @@ func pickByTwoChoices(req types.RequestContext, nodes []types.NodeSnapshot) type
 
 // hashRequest 将请求关键字段哈希为稳定的 uint64 值。
 func hashRequest(req types.RequestContext) uint64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(req.RequestID))
-	_, _ = h.Write([]byte(req.SessionID))
-	_, _ = h.Write([]byte(req.TenantID))
-	_, _ = h.Write([]byte(req.Model))
-	return h.Sum64()
+	h := uint64(fnvOffset64)
+	h = hashString64a(h, req.RequestID)
+	h = hashString64a(h, req.SessionID)
+	h = hashString64a(h, req.TenantID)
+	h = hashString64a(h, req.Model)
+	return h
+}
+
+func hashString64a(h uint64, s string) uint64 {
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= fnvPrime64
+	}
+	return h
 }
 
 // nodeScore 计算节点在候选输出中的展示分值。

@@ -11,7 +11,13 @@ import (
 )
 
 // pluginName 是 least_request 插件注册名。
-const pluginName = "least_request"
+const (
+	pluginName = "least_request"
+
+	reasonAlgorithmLeastRequest      = "algorithm=least_request"
+	reasonSortedByInflightQueueError = "sorted_by_inflight_queue_latency_error"
+	reasonCapacity                   = 4
+)
 
 // Plugin 实现 least_request 算法。
 type Plugin struct{}
@@ -38,13 +44,13 @@ func (Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapsho
 	limit := len(selected)
 	out := make([]types.Candidate, 0, limit)
 	for i := 0; i < limit; i++ {
+		reason := make([]string, 2, reasonCapacity)
+		reason[0] = reasonAlgorithmLeastRequest
+		reason[1] = reasonSortedByInflightQueueError
 		out = append(out, types.Candidate{
-			Node:  selected[i],
-			Score: float64(selected[i].Inflight*10000 + selected[i].QueueDepth*100),
-			Reason: []string{
-				"algorithm=least_request",
-				"sorted_by_inflight_queue_latency_error",
-			},
+			Node:   selected[i],
+			Score:  float64(selected[i].Inflight*10000 + selected[i].QueueDepth*100),
+			Reason: reason,
 		})
 	}
 	return out, nil

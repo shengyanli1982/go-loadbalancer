@@ -7,6 +7,8 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+const smallKThreshold = 16
+
 // LessNode 按既有优先级比较两个节点，返回 a 是否优于 b。
 func LessNode(a, b types.NodeSnapshot) bool {
 	if a.Inflight != b.Inflight {
@@ -43,14 +45,15 @@ func selectTopK(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []t
 		topK = len(nodes)
 	}
 	if excludedNodeID == "" && topK >= len(nodes) {
-		out := make([]types.NodeSnapshot, 0, len(nodes))
-		for _, node := range nodes {
-			out = append(out, node)
-		}
+		out := make([]types.NodeSnapshot, len(nodes))
+		copy(out, nodes)
 		sort.Slice(out, func(i, j int) bool {
 			return LessNode(out[i], out[j])
 		})
 		return out
+	}
+	if topK <= smallKThreshold {
+		return selectTopKSmallK(nodes, topK, excludedNodeID)
 	}
 
 	h := &nodeMaxHeap{
@@ -74,6 +77,35 @@ func selectTopK(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []t
 	sort.Slice(out, func(i, j int) bool {
 		return LessNode(out[i], out[j])
 	})
+	return out
+}
+
+// selectTopKSmallK 适用于 topK 很小的热路径，避免 container/heap 的额外开销。
+func selectTopKSmallK(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []types.NodeSnapshot {
+	out := make([]types.NodeSnapshot, 0, topK)
+	for _, node := range nodes {
+		if excludedNodeID != "" && node.NodeID == excludedNodeID {
+			continue
+		}
+		pos := len(out)
+		for i := 0; i < len(out); i++ {
+			if LessNode(node, out[i]) {
+				pos = i
+				break
+			}
+		}
+		if len(out) < topK {
+			out = append(out, types.NodeSnapshot{})
+			copy(out[pos+1:], out[pos:])
+			out[pos] = node
+			continue
+		}
+		if pos == len(out) {
+			continue
+		}
+		copy(out[pos+1:], out[pos:len(out)-1])
+		out[pos] = node
+	}
 	return out
 }
 
