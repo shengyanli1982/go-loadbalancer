@@ -11,6 +11,10 @@ const smallKThreshold = 16
 
 // LessNode 按既有优先级比较两个节点，返回 a 是否优于 b。
 func LessNode(a, b types.NodeSnapshot) bool {
+	return lessNodePtr(&a, &b)
+}
+
+func lessNodePtr(a, b *types.NodeSnapshot) bool {
 	if a.Inflight != b.Inflight {
 		return a.Inflight < b.Inflight
 	}
@@ -48,7 +52,7 @@ func selectTopK(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []t
 		out := make([]types.NodeSnapshot, len(nodes))
 		copy(out, nodes)
 		sort.Slice(out, func(i, j int) bool {
-			return LessNode(out[i], out[j])
+			return lessNodePtr(&out[i], &out[j])
 		})
 		return out
 	}
@@ -59,54 +63,77 @@ func selectTopK(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []t
 	h := &nodeMaxHeap{
 		items: make([]types.NodeSnapshot, 0, topK),
 	}
-	for _, node := range nodes {
-		if excludedNodeID != "" && node.NodeID == excludedNodeID {
+	for i := range nodes {
+		if excludedNodeID != "" && nodes[i].NodeID == excludedNodeID {
 			continue
 		}
 		if len(h.items) < topK {
-			heap.Push(h, node)
+			heap.Push(h, nodes[i])
 			continue
 		}
-		if LessNode(node, h.items[0]) {
-			h.items[0] = node
+		if lessNodePtr(&nodes[i], &h.items[0]) {
+			h.items[0] = nodes[i]
 			heap.Fix(h, 0)
 		}
 	}
 
 	out := append([]types.NodeSnapshot(nil), h.items...)
 	sort.Slice(out, func(i, j int) bool {
-		return LessNode(out[i], out[j])
+		return lessNodePtr(&out[i], &out[j])
 	})
 	return out
 }
 
 // selectTopKSmallK 适用于 topK 很小的热路径，避免 container/heap 的额外开销。
 func selectTopKSmallK(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []types.NodeSnapshot {
-	out := make([]types.NodeSnapshot, 0, topK)
-	for _, node := range nodes {
-		if excludedNodeID != "" && node.NodeID == excludedNodeID {
+	selectedIdx := make([]int, 0, topK)
+	worstPos := -1
+	for i := range nodes {
+		if excludedNodeID != "" && nodes[i].NodeID == excludedNodeID {
 			continue
 		}
-		pos := len(out)
-		for i := 0; i < len(out); i++ {
-			if LessNode(node, out[i]) {
-				pos = i
-				break
+		if len(selectedIdx) < topK {
+			selectedIdx = append(selectedIdx, i)
+			if len(selectedIdx) == topK {
+				worstPos = findWorstPos(nodes, selectedIdx)
 			}
-		}
-		if len(out) < topK {
-			out = append(out, types.NodeSnapshot{})
-			copy(out[pos+1:], out[pos:])
-			out[pos] = node
 			continue
 		}
-		if pos == len(out) {
+		if !lessNodePtr(&nodes[i], &nodes[selectedIdx[worstPos]]) {
 			continue
 		}
-		copy(out[pos+1:], out[pos:len(out)-1])
-		out[pos] = node
+		selectedIdx[worstPos] = i
+		worstPos = findWorstPos(nodes, selectedIdx)
+	}
+
+	if len(selectedIdx) == 0 {
+		return nil
+	}
+	for i := 1; i < len(selectedIdx); i++ {
+		idx := selectedIdx[i]
+		j := i - 1
+		for ; j >= 0 && lessNodePtr(&nodes[idx], &nodes[selectedIdx[j]]); j-- {
+			selectedIdx[j+1] = selectedIdx[j]
+		}
+		selectedIdx[j+1] = idx
+	}
+
+	out := make([]types.NodeSnapshot, len(selectedIdx))
+	for i, idx := range selectedIdx {
+		out[i] = nodes[idx]
 	}
 	return out
+}
+
+func findWorstPos(nodes []types.NodeSnapshot, selectedIdx []int) int {
+	worst := 0
+	for i := 1; i < len(selectedIdx); i++ {
+		// 若当前 worst 比较优，则 i 是更差候选。
+		if lessNodePtr(&nodes[selectedIdx[worst]], &nodes[selectedIdx[i]]) {
+			worst = i
+		}
+	}
+	return worst
 }
 
 // nodeMaxHeap 是容量受限的最大堆实现，用于维护当前最差候选。
@@ -119,7 +146,7 @@ func (h nodeMaxHeap) Len() int { return len(h.items) }
 
 // Less 反转比较规则，构建“最差节点在堆顶”的固定容量堆。
 func (h nodeMaxHeap) Less(i, j int) bool {
-	return LessNode(h.items[j], h.items[i])
+	return lessNodePtr(&h.items[j], &h.items[i])
 }
 
 // Swap 交换堆中两个元素位置。

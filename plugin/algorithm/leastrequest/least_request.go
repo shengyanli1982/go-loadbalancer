@@ -43,13 +43,17 @@ func (Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapsho
 	selected := selectutil.SelectTopK(nodes, topK)
 	limit := len(selected)
 	out := make([]types.Candidate, 0, limit)
+	reasonBuffer := make([]string, limit*reasonCapacity)
 	for i := 0; i < limit; i++ {
-		reason := make([]string, 2, reasonCapacity)
+		reasonOffset := i * reasonCapacity
+		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+reasonCapacity]
 		reason[0] = reasonAlgorithmLeastRequest
 		reason[1] = reasonSortedByInflightQueueError
+
+		node := selected[i]
 		out = append(out, types.Candidate{
-			Node:   selected[i],
-			Score:  float64(selected[i].Inflight*10000 + selected[i].QueueDepth*100),
+			Node:   node,
+			Score:  float64(node.Inflight*10000 + node.QueueDepth*100),
 			Reason: reason,
 		})
 	}
