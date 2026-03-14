@@ -33,15 +33,15 @@ A2X is built for:
 | Layer             | Built-in                        | What It Gives You                          |
 | ----------------- | ------------------------------- | ------------------------------------------ |
 | Core Balancer     | Routing pipeline + fallback     | Stable hot path and predictable behavior   |
-| Algorithm Plugins | `p2c`, `least_request`          | Fast balancing strategies for real traffic |
-| Policy Plugins    | `health_gate`, `tenant_quota`   | Hard constraints before final pick         |
+| Algorithm Plugins | `rr`, `wrr`, `consistent_hash`, `p2c`, `least_request` | Fast balancing strategies for real traffic |
+| Policy Plugins    | `health_gate`, `tenant_quota`, `llm_kv_affinity`, `llm_stage_aware`, `llm_token_aware_queue` | Hard constraints before final pick         |
 | Objective Plugin  | `weighted_objective` (optional) | Top-K second-pass optimization             |
 | Telemetry         | `Sink`, `NoopSink`              | Clean observability integration boundary   |
 
 ## Performance
 
 ```bash
-go test -run ^$ -bench . -benchmem ./balancer ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest ./plugin/objective/weighted ./registry
+go test -run ^$ -bench . -benchmem ./balancer ./plugin/algorithm/rr ./plugin/algorithm/wrr ./plugin/algorithm/consistenthash ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest ./plugin/objective/weighted ./registry
 ```
 
 Benchmark environment (measured on 2026-03-14):
@@ -66,7 +66,7 @@ Benchmark environment (measured on 2026-03-14):
 Algorithm deep-dive benchmark command:
 
 ```bash
-go test -run ^$ -bench BenchmarkSelectCandidates -benchmem ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest
+go test -run ^$ -bench BenchmarkSelectCandidates -benchmem ./plugin/algorithm/rr ./plugin/algorithm/wrr ./plugin/algorithm/consistenthash ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest
 ```
 
 | Algorithm | Scenario | ns/op | B/op | allocs/op |

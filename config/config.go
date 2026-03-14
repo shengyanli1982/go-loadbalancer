@@ -15,12 +15,18 @@ const (
 	FallbackPolicyRanked = "policy_ranked"
 
 	// 内置算法插件名。
-	AlgorithmP2C          = "p2c"
-	AlgorithmLeastRequest = "least_request"
+	AlgorithmRoundRobin         = "rr"
+	AlgorithmWeightedRoundRobin = "wrr"
+	AlgorithmConsistentHash     = "consistent_hash"
+	AlgorithmP2C                = "p2c"
+	AlgorithmLeastRequest       = "least_request"
 
 	// 内置策略插件名。
-	PolicyHealthGate  = "health_gate"
-	PolicyTenantQuota = "tenant_quota"
+	PolicyHealthGate         = "health_gate"
+	PolicyTenantQuota        = "tenant_quota"
+	PolicyLLMKVAffinity      = "llm_kv_affinity"
+	PolicyLLMStageAware      = "llm_stage_aware"
+	PolicyLLMTokenAwareQueue = "llm_token_aware_queue"
 
 	// 内置目标函数插件名。
 	ObjectiveWeighted = "weighted_objective"

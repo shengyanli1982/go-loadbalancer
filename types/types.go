@@ -29,20 +29,21 @@ type RequestContext struct {
 // NodeSnapshot 描述节点在路由瞬间的状态。
 // 包含节点的健康状态、资源使用情况、性能指标等信息。
 type NodeSnapshot struct {
-	NodeID            string             // 节点唯一标识
-	Region            string             // 节点所在地域
-	Healthy           bool               // 节点是否健康
-	Inflight          int                // 当前处理中的请求数
-	QueueDepth        int                // 请求队列深度
-	CPUUtil           float64            // CPU 使用率（0-100）
-	MemUtil           float64            // 内存使用率（0-100）
-	AvgLatencyMs      float64            // 平均延迟（毫秒）
-	P95LatencyMs      float64            // P95 延迟（毫秒）
-	ErrorRate         float64            // 错误率（0-1）
-	KVCacheHitRate    float64            // KV 缓存命中率（0-1）
-	TTFTMs            float64            // Time To First Token（毫秒）
-	TPOTMs            float64            // Time Per Output Token（毫秒）
-	ModelAvailability map[string]bool    // 模型可用性映射
+	NodeID            string          // 节点唯一标识
+	Region            string          // 节点所在地域
+	Healthy           bool            // 节点是否健康
+	StaticWeight      int             // 节点静态权重（用于 RR/WRR，<=0 按 1 处理）
+	Inflight          int             // 当前处理中的请求数
+	QueueDepth        int             // 请求队列深度
+	CPUUtil           float64         // CPU 使用率（0-100）
+	MemUtil           float64         // 内存使用率（0-100）
+	AvgLatencyMs      float64         // 平均延迟（毫秒）
+	P95LatencyMs      float64         // P95 延迟（毫秒）
+	ErrorRate         float64         // 错误率（0-1）
+	KVCacheHitRate    float64         // KV 缓存命中率（0-1）
+	TTFTMs            float64         // Time To First Token（毫秒）
+	TPOTMs            float64         // Time Per Output Token（毫秒）
+	ModelAvailability map[string]bool // 模型可用性映射
 }
 
 // Candidate 表示候选节点及其评分解释。
