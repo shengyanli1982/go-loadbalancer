@@ -2,18 +2,50 @@ package balancer_test
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 
 	"github.com/shengyanli1982/go-loadbalancer/balancer"
 	"github.com/shengyanli1982/go-loadbalancer/config"
+	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
+	"github.com/shengyanli1982/go-loadbalancer/registry"
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 const (
 	benchmarkMetadataMaxInflightKey = "tenant_quota_max_inflight"
 	benchmarkMetadataMaxQueueKey    = "tenant_quota_max_queue"
+	benchmarkAlgorithmEmpty         = "bench_empty_candidates"
+	benchmarkAlgorithmError         = "bench_error_candidates"
 )
+
+var benchmarkModelASet = types.NewModelCapabilitySet(map[string]bool{"model-a": true})
+
+type benchmarkEmptyCandidateAlgorithm struct{}
+
+func (benchmarkEmptyCandidateAlgorithm) Name() string {
+	return benchmarkAlgorithmEmpty
+}
+
+func (benchmarkEmptyCandidateAlgorithm) SelectCandidates(_ types.RequestContext, _ []types.NodeSnapshot, _ int) ([]types.Candidate, error) {
+	return nil, nil
+}
+
+type benchmarkErrorCandidateAlgorithm struct{}
+
+func (benchmarkErrorCandidateAlgorithm) Name() string {
+	return benchmarkAlgorithmError
+}
+
+func (benchmarkErrorCandidateAlgorithm) SelectCandidates(_ types.RequestContext, _ []types.NodeSnapshot, _ int) ([]types.Candidate, error) {
+	return nil, lberrors.ErrNoCandidate
+}
+
+func init() {
+	registry.MustRegisterAlgorithm(benchmarkEmptyCandidateAlgorithm{})
+	registry.MustRegisterAlgorithm(benchmarkErrorCandidateAlgorithm{})
+}
 
 func BenchmarkRoute(b *testing.B) {
 	b.Run("serial_nodes_32", func(b *testing.B) {
@@ -36,6 +68,50 @@ func BenchmarkRoute(b *testing.B) {
 	})
 	b.Run("serial_fallback_policy_ranked_nodes_256", func(b *testing.B) {
 		benchmarkRouteSerialFallbackPolicyRanked(b, 256)
+	})
+}
+
+func BenchmarkRouteFailurePaths(b *testing.B) {
+	b.Run("serial_no_healthy_nodes", func(b *testing.B) {
+		lb := benchmarkNewBalancer(b)
+		req := benchmarkRouteRequest()
+		nodes := []types.NodeSnapshot{{NodeID: "n0", Healthy: false}}
+		benchmarkRouteSerialExpectError(b, lb, req, nodes, lberrors.ErrNoHealthyNodes)
+	})
+	b.Run("serial_no_model_available", func(b *testing.B) {
+		lb := benchmarkNewBalancer(b)
+		req := benchmarkRouteRequest()
+		nodes := []types.NodeSnapshot{
+			{
+				NodeID:            "n0",
+				Healthy:           true,
+				ModelAvailability: map[string]bool{"model-b": true},
+				ModelCapability:   types.NewModelCapabilitySet(map[string]bool{"model-b": true}),
+			},
+		}
+		benchmarkRouteSerialExpectError(b, lb, req, nodes, lberrors.ErrNoModelAvailable)
+	})
+	b.Run("serial_empty_candidates", func(b *testing.B) {
+		lb := benchmarkMustNewBalancer(
+			b,
+			config.WithAlgorithm(types.RouteGeneric, benchmarkAlgorithmEmpty),
+			config.WithPolicies(),
+			config.WithFallback(benchmarkAlgorithmEmpty),
+		)
+		req := benchmarkRouteRequest()
+		nodes := benchmarkRouteNodes(256)
+		benchmarkRouteSerialExpectError(b, lb, req, nodes, lberrors.ErrNoCandidate)
+	})
+	b.Run("serial_algorithm_error", func(b *testing.B) {
+		lb := benchmarkMustNewBalancer(
+			b,
+			config.WithAlgorithm(types.RouteGeneric, benchmarkAlgorithmError),
+			config.WithPolicies(),
+			config.WithFallback(benchmarkAlgorithmError),
+		)
+		req := benchmarkRouteRequest()
+		nodes := benchmarkRouteNodes(256)
+		benchmarkRouteSerialExpectError(b, lb, req, nodes, lberrors.ErrNoCandidate)
 	})
 }
 
@@ -135,6 +211,23 @@ func benchmarkRouteSerialRun(b *testing.B, lb balancer.Balancer, req types.Reque
 	}
 }
 
+func benchmarkRouteSerialExpectError(b *testing.B, lb balancer.Balancer, req types.RequestContext, nodes []types.NodeSnapshot, target error) {
+	b.Helper()
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := lb.Route(ctx, req, nodes)
+		if err == nil {
+			b.Fatal("expect route error")
+		}
+		if target != nil && !errors.Is(err, target) {
+			b.Fatalf("expect error %v, got %v", target, err)
+		}
+	}
+}
+
 func benchmarkRouteRequest() types.RequestContext {
 	return types.RequestContext{
 		RequestID:  "req-bench",
@@ -149,15 +242,13 @@ func benchmarkRouteNodes(n int) []types.NodeSnapshot {
 	nodes := make([]types.NodeSnapshot, 0, n)
 	for i := 0; i < n; i++ {
 		nodes = append(nodes, types.NodeSnapshot{
-			NodeID:       "n" + strconv.Itoa(i),
-			Healthy:      true,
-			Inflight:     (i*31 + 17) % 200,
-			QueueDepth:   (i*23 + 11) % 150,
-			P95LatencyMs: float64((i*19)%120) + 1,
-			ErrorRate:    float64((i*7)%20) / 1000.0,
-			ModelAvailability: map[string]bool{
-				"model-a": true,
-			},
+			NodeID:          "n" + strconv.Itoa(i),
+			Healthy:         true,
+			Inflight:        (i*31 + 17) % 200,
+			QueueDepth:      (i*23 + 11) % 150,
+			P95LatencyMs:    float64((i*19)%120) + 1,
+			ErrorRate:       float64((i*7)%20) / 1000.0,
+			ModelCapability: benchmarkModelASet,
 		})
 	}
 	return nodes
@@ -167,15 +258,13 @@ func benchmarkRouteHighLoadNodes(n int) []types.NodeSnapshot {
 	nodes := make([]types.NodeSnapshot, 0, n)
 	for i := 0; i < n; i++ {
 		nodes = append(nodes, types.NodeSnapshot{
-			NodeID:       "h" + strconv.Itoa(i),
-			Healthy:      true,
-			Inflight:     10 + (i % 50),
-			QueueDepth:   10 + (i % 50),
-			P95LatencyMs: float64((i % 80) + 20),
-			ErrorRate:    float64((i%20)+1) / 1000.0,
-			ModelAvailability: map[string]bool{
-				"model-a": true,
-			},
+			NodeID:          "h" + strconv.Itoa(i),
+			Healthy:         true,
+			Inflight:        10 + (i % 50),
+			QueueDepth:      10 + (i % 50),
+			P95LatencyMs:    float64((i % 80) + 20),
+			ErrorRate:       float64((i%20)+1) / 1000.0,
+			ModelCapability: benchmarkModelASet,
 		})
 	}
 	return nodes

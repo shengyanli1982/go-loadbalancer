@@ -26,27 +26,27 @@ var (
 
 const (
 	// CodeInvalidTopK 表示 top_k 不在允许范围。
-	CodeInvalidTopK             = "CONFIG_INVALID_TOPK"
+	CodeInvalidTopK = "CONFIG_INVALID_TOPK"
 	// CodeInvalidRouteClass 表示路由类别非法或重复。
-	CodeInvalidRouteClass       = "CONFIG_INVALID_ROUTE_CLASS"
+	CodeInvalidRouteClass = "CONFIG_INVALID_ROUTE_CLASS"
 	// CodeMissingAlgorithmBinding 表示路由类别缺少算法绑定或绑定算法未注册。
 	CodeMissingAlgorithmBinding = "CONFIG_MISSING_ALGORITHM_BINDING"
 	// CodeDuplicatePolicy 表示策略链中存在重复项。
-	CodeDuplicatePolicy         = "CONFIG_DUPLICATE_POLICY"
+	CodeDuplicatePolicy = "CONFIG_DUPLICATE_POLICY"
 	// CodeUnknownPolicy 表示策略链包含未注册策略。
-	CodeUnknownPolicy           = "CONFIG_UNKNOWN_POLICY"
+	CodeUnknownPolicy = "CONFIG_UNKNOWN_POLICY"
 	// CodeInvalidObjective 表示目标函数配置非法。
-	CodeInvalidObjective        = "CONFIG_INVALID_OBJECTIVE"
+	CodeInvalidObjective = "CONFIG_INVALID_OBJECTIVE"
 	// CodeInvalidObjectiveTimeout 表示目标函数超时配置非法。
 	CodeInvalidObjectiveTimeout = "CONFIG_INVALID_OBJECTIVE_TIMEOUT"
 	// CodeInvalidFallbackChain 表示回退链配置非法。
-	CodeInvalidFallbackChain    = "CONFIG_INVALID_FALLBACK_CHAIN"
+	CodeInvalidFallbackChain = "CONFIG_INVALID_FALLBACK_CHAIN"
 	// CodeInvalidWeight 表示权重值非法。
-	CodeInvalidWeight           = "CONFIG_INVALID_WEIGHT"
+	CodeInvalidWeight = "CONFIG_INVALID_WEIGHT"
 	// CodeInvalidWeightSum 表示权重和不为 10000。
-	CodeInvalidWeightSum        = "CONFIG_INVALID_WEIGHT_SUM"
+	CodeInvalidWeightSum = "CONFIG_INVALID_WEIGHT_SUM"
 	// CodeMissingLLMWeights 表示 LLM 路由缺少必须权重项。
-	CodeMissingLLMWeights       = "CONFIG_MISSING_LLM_WEIGHTS"
+	CodeMissingLLMWeights = "CONFIG_MISSING_LLM_WEIGHTS"
 )
 
 // ConfigError 表示配置字段级错误。

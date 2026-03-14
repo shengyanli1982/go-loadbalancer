@@ -63,23 +63,40 @@ Benchmark environment (measured on 2026-03-14):
 - OS/Arch: `windows/amd64`
 - CPU: `12th Gen Intel(R) Core(TM) i5-12400F`
 
+Core route benchmarks:
+
 | Benchmark                                                |  ns/op |  B/op | allocs/op |
 | -------------------------------------------------------- | -----: | ----: | --------: |
-| `BenchmarkRoute/serial_nodes_32`                         |   1511 |  1920 |         7 |
-| `BenchmarkRoute/serial_nodes_256`                        |   9331 |  1920 |         7 |
-| `BenchmarkRoute/serial_nodes_1024`                       |  34908 |  1920 |         7 |
-| `BenchmarkRoute/parallel_nodes_256`                      |   2017 |  1920 |         7 |
-| `BenchmarkRoute/serial_default_config_nodes_256`         |   9198 |  1920 |         8 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |  13024 |  2776 |        14 |
-| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |  19921 |  1945 |         8 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`)     |  365.8 |  1664 |         9 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`)    |  19608 |  2688 |        10 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`)     | 183983 | 29152 |        14 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`)    |  37424 |  2944 |        10 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`)     |  38748 |  3072 |        10 |
-| `BenchmarkChoose` (`plugin/objective/weighted`)          |  337.2 |    16 |         1 |
-| `BenchmarkManagerGetAlgorithm/hit_serial`                |  16.75 |     0 |         0 |
-| `BenchmarkManagerHasAlgorithm/hit_serial`                |  16.59 |     0 |         0 |
+| `BenchmarkRoute/serial_nodes_32`                         |  627.3 |  2032 |         4 |
+| `BenchmarkRoute/serial_nodes_256`                        |   1677 |  2032 |         4 |
+| `BenchmarkRoute/serial_nodes_1024`                       |   4900 |  2032 |         4 |
+| `BenchmarkRoute/parallel_nodes_256`                      |  598.8 |  2032 |         4 |
+| `BenchmarkRoute/serial_default_config_nodes_256`         |   2126 |  2016 |         9 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |   3841 |  2888 |        11 |
+| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |   1892 |  2057 |         5 |
+
+Failure-path benchmarks:
+
+| Benchmark                                              |  ns/op | B/op | allocs/op |
+| ------------------------------------------------------ | -----: | ---: | --------: |
+| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes`   |  21.90 |    0 |         0 |
+| `BenchmarkRouteFailurePaths/serial_no_model_available` |  21.44 |    0 |         0 |
+| `BenchmarkRouteFailurePaths/serial_empty_candidates`   |  628.4 |   56 |         2 |
+| `BenchmarkRouteFailurePaths/serial_algorithm_error`    |  718.6 |  168 |         6 |
+
+Selected component benchmarks:
+
+| Benchmark                                             |   ns/op |  B/op | allocs/op |
+| ----------------------------------------------------- | ------: | ----: | --------: |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`) |   410.5 |  1792 |         9 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`) |  19798 |  2816 |        10 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`) |   3100 |  1920 |         3 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`) |   4434 |  3136 |        11 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`) |   2629 |  3392 |         4 |
+| `BenchmarkChoose` (`plugin/objective/weighted`)       |   339.7 |    16 |         1 |
+| `BenchmarkManagerGetAlgorithm/hit_serial`             |   16.80 |     0 |         0 |
+| `BenchmarkManagerHasAlgorithm/hit_serial`             |   16.62 |     0 |         0 |
+| `BenchmarkManagerRegisterAlgorithmParallel`           |   361.9 |   124 |         1 |
 
 Algorithm deep-dive benchmark command:
 
@@ -87,37 +104,7 @@ Algorithm deep-dive benchmark command:
 go test -run ^$ -bench BenchmarkSelectCandidates -benchmem ./plugin/algorithm/rr ./plugin/algorithm/wrr ./plugin/algorithm/consistenthash ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest
 ```
 
-| Algorithm | Scenario             |  ns/op |  B/op | allocs/op |
-| --------- | -------------------- | -----: | ----: | --------: |
-| `rr`      | `nodes_32_topk_1`    |  66.86 |   208 |         2 |
-| `rr`      | `nodes_32_topk_8`    |  376.5 |  1664 |         9 |
-| `rr`      | `nodes_256_topk_8`   |  362.8 |  1664 |         9 |
-| `rr`      | `nodes_1024_topk_8`  |  365.8 |  1664 |         9 |
-| `rr`      | `nodes_1024_topk_32` |   1401 |  7168 |        33 |
-| `rr`      | `nodes_4096_topk_32` |   1481 |  7168 |        33 |
-| `wrr`     | `nodes_32_topk_1`    |  319.7 |   240 |         3 |
-| `wrr`     | `nodes_32_topk_8`    |   1579 |  1696 |        10 |
-| `wrr`     | `nodes_256_topk_8`   |   5682 |  1920 |        10 |
-| `wrr`     | `nodes_1024_topk_8`  |  19608 |  2688 |        10 |
-| `wrr`     | `nodes_1024_topk_32` |  69718 |  8192 |        34 |
-| `wrr`     | `nodes_4096_topk_32` | 255986 | 11264 |        34 |
-| `ch`      | `nodes_32_topk_1`    |   2545 |  1216 |         7 |
-| `ch`      | `nodes_32_topk_8`    |   9380 |  2784 |        14 |
-| `ch`      | `nodes_256_topk_8`   |  36093 |  8416 |        14 |
-| `ch`      | `nodes_1024_topk_8`  | 183983 | 29152 |        14 |
-| `ch`      | `nodes_1024_topk_32` | 276899 | 35040 |        38 |
-| `p2c`     | `nodes_32_topk_1`    |  117.0 |   240 |         2 |
-| `p2c`     | `nodes_32_topk_8`    |   1592 |  2944 |        10 |
-| `p2c`     | `nodes_256_topk_8`   |   9306 |  2944 |        10 |
-| `p2c`     | `nodes_1024_topk_8`  |  37424 |  2944 |        10 |
-| `p2c`     | `nodes_1024_topk_32` |  25373 | 22624 |        70 |
-| `p2c`     | `nodes_4096_topk_32` |  52214 | 22624 |        70 |
-| `lr`      | `nodes_32_topk_1`    |  356.1 |   384 |         3 |
-| `lr`      | `nodes_32_topk_8`    |   1595 |  3072 |        10 |
-| `lr`      | `nodes_256_topk_8`   |  10142 |  3072 |        10 |
-| `lr`      | `nodes_1024_topk_8`  |  38748 |  3072 |        10 |
-| `lr`      | `nodes_1024_topk_32` |  23212 | 22768 |        71 |
-| `lr`      | `nodes_4096_topk_32` |  52564 | 22768 |        71 |
+Raw benchmark logs used for this section are saved under `artifacts/perf/20260314-readme-refresh-chash/`.
 
 Numbers are from a single local run and should be used as a baseline reference. Re-run on your target hardware for production capacity planning.
 
@@ -163,25 +150,26 @@ func main() {
 		RouteClass: types.RouteGeneric,
 		Model:      "model-a",
 	}
+	modelASet := types.NewModelCapabilitySet(map[string]bool{"model-a": true})
 
 	nodes := []types.NodeSnapshot{
 		{
-			NodeID:            "node-a",
-			Healthy:           true,
-			Inflight:          10,
-			QueueDepth:        5,
-			P95LatencyMs:      30,
-			ErrorRate:         0.02,
-			ModelAvailability: map[string]bool{"model-a": true},
+			NodeID:          "node-a",
+			Healthy:         true,
+			Inflight:        10,
+			QueueDepth:      5,
+			P95LatencyMs:    30,
+			ErrorRate:       0.02,
+			ModelCapability: modelASet,
 		},
 		{
-			NodeID:            "node-b",
-			Healthy:           true,
-			Inflight:          3,
-			QueueDepth:        1,
-			P95LatencyMs:      18,
-			ErrorRate:         0.01,
-			ModelAvailability: map[string]bool{"model-a": true},
+			NodeID:          "node-b",
+			Healthy:         true,
+			Inflight:        3,
+			QueueDepth:      1,
+			P95LatencyMs:    18,
+			ErrorRate:       0.01,
+			ModelCapability: modelASet,
 		},
 	}
 

@@ -27,18 +27,25 @@ const (
 )
 
 type ringEntry struct {
-	hash   uint64
-	nodeID string
+	hash      uint64
+	nodeIndex int
 }
 
 type nodeKey struct {
+	nodeID    string
+	weight    int
+	nodeIndex int
+}
+
+type nodeState struct {
 	nodeID string
 	weight int
 }
 
 type ringCache struct {
-	keys []nodeKey
-	ring []ringEntry
+	state       []nodeState
+	ring        []ringEntry
+	uniqueNodes int
 }
 
 type Plugin struct {
@@ -64,17 +71,17 @@ func (p *Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSn
 		return nil, lberrors.ErrNoCandidate
 	}
 
-	keys := canonicalNodeKeys(nodes)
-	if len(keys) == 0 {
+	cache := p.loadOrBuildRing(nodes)
+	if cache.uniqueNodes == 0 {
 		return nil, lberrors.ErrNoCandidate
 	}
 
 	limit := topK
-	if limit > len(keys) {
-		limit = len(keys)
+	if limit > cache.uniqueNodes {
+		limit = cache.uniqueNodes
 	}
 
-	ring := p.loadOrBuildRing(keys)
+	ring := cache.ring
 	if len(ring) == 0 {
 		return nil, lberrors.ErrNoCandidate
 	}
@@ -85,23 +92,27 @@ func (p *Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSn
 		start = 0
 	}
 
-	selectedIDs := make([]string, 0, limit)
+	seen := make([]uint64, (len(nodes)+63)>>6)
 	out := make([]types.Candidate, 0, limit)
+	reasonBuffer := make([]string, limit*2)
 	for i := 0; i < len(ring) && len(out) < limit; i++ {
 		idx := (start + i) % len(ring)
-		nodeID := ring[idx].nodeID
-		if containsNodeID(selectedIDs, nodeID) {
+		nodeIndex := ring[idx].nodeIndex
+		seenWord := nodeIndex >> 6
+		seenBit := uint64(1) << (uint(nodeIndex) & 63)
+		if (seen[seenWord] & seenBit) != 0 {
 			continue
 		}
-		node, ok := findNodeByID(nodes, nodeID)
-		if !ok {
-			continue
-		}
-		selectedIDs = append(selectedIDs, nodeID)
+		seen[seenWord] |= seenBit
+		node := nodes[nodeIndex]
+		reasonOffset := len(out) * 2
+		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+2]
+		reason[0] = reasonAlgorithmConsistentHash
+		reason[1] = reasonRingLookup
 		out = append(out, types.Candidate{
 			Node:   node,
 			Score:  float64(ring[idx].hash),
-			Reason: []string{reasonAlgorithmConsistentHash, reasonRingLookup},
+			Reason: reason,
 		})
 	}
 	if len(out) == 0 {
@@ -110,24 +121,30 @@ func (p *Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSn
 	return out, nil
 }
 
-func (p *Plugin) loadOrBuildRing(keys []nodeKey) []ringEntry {
+func (p *Plugin) loadOrBuildRing(nodes []types.NodeSnapshot) ringCache {
 	p.mu.RLock()
-	if keysEqual(keys, p.cache.keys) {
-		ring := p.cache.ring
+	if nodesEqualState(nodes, p.cache.state) {
+		cache := p.cache
 		p.mu.RUnlock()
-		return ring
+		return cache
 	}
 	p.mu.RUnlock()
 
+	state, keys := snapshotStateAndCanonicalKeys(nodes)
 	ring := buildRing(keys)
+	newCache := ringCache{
+		state:       state,
+		ring:        ring,
+		uniqueNodes: len(keys),
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if keysEqual(keys, p.cache.keys) {
-		return p.cache.ring
+	if nodesEqualState(nodes, p.cache.state) {
+		return p.cache
 	}
-	p.cache = ringCache{keys: keys, ring: ring}
-	return p.cache.ring
+	p.cache = newCache
+	return p.cache
 }
 
 func buildRing(keys []nodeKey) []ringEntry {
@@ -141,8 +158,8 @@ func buildRing(keys []nodeKey) []ringEntry {
 		replicas := replicasForWeight(key.weight)
 		for replica := 0; replica < replicas; replica++ {
 			ring = append(ring, ringEntry{
-				hash:   hashString64a(fnvOffset64, key.nodeID+"#"+strconv.Itoa(replica)),
-				nodeID: key.nodeID,
+				hash:      hashString64a(fnvOffset64, key.nodeID+"#"+strconv.Itoa(replica)),
+				nodeIndex: key.nodeIndex,
 			})
 		}
 	}
@@ -151,7 +168,7 @@ func buildRing(keys []nodeKey) []ringEntry {
 		if ring[i].hash != ring[j].hash {
 			return ring[i].hash < ring[j].hash
 		}
-		return ring[i].nodeID < ring[j].nodeID
+		return ring[i].nodeIndex < ring[j].nodeIndex
 	})
 	return ring
 }
@@ -168,19 +185,31 @@ func replicasForWeight(weight int) int {
 	return replicas
 }
 
-func canonicalNodeKeys(nodes []types.NodeSnapshot) []nodeKey {
+func snapshotStateAndCanonicalKeys(nodes []types.NodeSnapshot) ([]nodeState, []nodeKey) {
+	state := make([]nodeState, 0, len(nodes))
 	keys := make([]nodeKey, 0, len(nodes))
-	for _, node := range nodes {
+	firstIndex := make(map[string]int, len(nodes))
+	for idx := range nodes {
+		node := &nodes[idx]
 		if node.NodeID == "" {
 			continue
 		}
-		keys = append(keys, nodeKey{
+		weight := effectiveWeight(node)
+		state = append(state, nodeState{
 			nodeID: node.NodeID,
-			weight: effectiveWeight(node),
+			weight: weight,
 		})
+		keys = append(keys, nodeKey{
+			nodeID:    node.NodeID,
+			weight:    weight,
+			nodeIndex: idx,
+		})
+		if _, exists := firstIndex[node.NodeID]; !exists {
+			firstIndex[node.NodeID] = idx
+		}
 	}
 	if len(keys) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	sort.Slice(keys, func(i, j int) bool {
@@ -191,51 +220,62 @@ func canonicalNodeKeys(nodes []types.NodeSnapshot) []nodeKey {
 	})
 
 	// 去重：同 nodeID 仅保留第一个（更高权重优先）。
-	uniq := keys[:1]
+	uniq := keys[:0]
+	uniq = append(uniq, nodeKey{
+		nodeID:    keys[0].nodeID,
+		weight:    keys[0].weight,
+		nodeIndex: firstIndex[keys[0].nodeID],
+	})
 	for i := 1; i < len(keys); i++ {
 		if keys[i].nodeID == keys[i-1].nodeID {
 			continue
 		}
-		uniq = append(uniq, keys[i])
+		uniq = append(uniq, nodeKey{
+			nodeID:    keys[i].nodeID,
+			weight:    keys[i].weight,
+			nodeIndex: firstIndex[keys[i].nodeID],
+		})
 	}
-	return uniq
+	return state, uniq
 }
 
-func keysEqual(a, b []nodeKey) bool {
-	if len(a) != len(b) {
-		return false
+func nodesEqualState(nodes []types.NodeSnapshot, state []nodeState) bool {
+	if len(nodes) == len(state) {
+		for i := 0; i < len(nodes); i++ {
+			if nodes[i].NodeID != state[i].nodeID {
+				return false
+			}
+			if effectiveWeight(&nodes[i]) != state[i].weight {
+				return false
+			}
+		}
+		return true
 	}
-	for i := 0; i < len(a); i++ {
-		if a[i] != b[i] {
+
+	stateIdx := 0
+	for i := 0; i < len(nodes); i++ {
+		if nodes[i].NodeID == "" {
+			continue
+		}
+		if stateIdx >= len(state) {
 			return false
 		}
+		if nodes[i].NodeID != state[stateIdx].nodeID {
+			return false
+		}
+		if effectiveWeight(&nodes[i]) != state[stateIdx].weight {
+			return false
+		}
+		stateIdx++
 	}
-	return true
+	return stateIdx == len(state)
 }
 
-func effectiveWeight(node types.NodeSnapshot) int {
+func effectiveWeight(node *types.NodeSnapshot) int {
 	if node.StaticWeight <= 0 {
 		return 1
 	}
 	return node.StaticWeight
-}
-
-func containsNodeID(selectedIDs []string, nodeID string) bool {
-	for i := 0; i < len(selectedIDs); i++ {
-		if selectedIDs[i] == nodeID {
-			return true
-		}
-	}
-	return false
-}
-
-func findNodeByID(nodes []types.NodeSnapshot, nodeID string) (types.NodeSnapshot, bool) {
-	for i := 0; i < len(nodes); i++ {
-		if nodes[i].NodeID == nodeID {
-			return nodes[i], true
-		}
-	}
-	return types.NodeSnapshot{}, false
 }
 
 func hashRequestKey(req types.RequestContext) uint64 {

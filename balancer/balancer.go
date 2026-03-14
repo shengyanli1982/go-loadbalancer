@@ -344,15 +344,17 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.
 	if len(nodes) == 0 {
 		return nil, lberrors.ErrNoHealthyNodes
 	}
+	model := req.Model
 	healthyCount := 0
 	matchedCount := 0
 	// 第一轮仅统计，命中“全部通过”时直接复用原切片，避免热路径复制。
-	for _, n := range nodes {
+	for i := range nodes {
+		n := &nodes[i]
 		if !n.Healthy {
 			continue
 		}
 		healthyCount++
-		if req.Model != "" && len(n.ModelAvailability) > 0 && !n.ModelAvailability[req.Model] {
+		if model != "" && !nodeSupportsModel(n, model) {
 			continue
 		}
 		matchedCount++
@@ -369,16 +371,27 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.
 	}
 
 	filtered := make([]types.NodeSnapshot, 0, matchedCount)
-	for _, n := range nodes {
+	for i := range nodes {
+		n := &nodes[i]
 		if !n.Healthy {
 			continue
 		}
-		if req.Model != "" && len(n.ModelAvailability) > 0 && !n.ModelAvailability[req.Model] {
+		if model != "" && !nodeSupportsModel(n, model) {
 			continue
 		}
-		filtered = append(filtered, n)
+		filtered = append(filtered, *n)
 	}
 	return filtered, nil
+}
+
+func nodeSupportsModel(n *types.NodeSnapshot, model string) bool {
+	if n.ModelCapability != nil {
+		return n.ModelCapability.Allows(model)
+	}
+	if len(n.ModelAvailability) == 0 {
+		return true
+	}
+	return n.ModelAvailability[model]
 }
 
 // sinceMs 返回从 started 到当前时刻的毫秒耗时。
