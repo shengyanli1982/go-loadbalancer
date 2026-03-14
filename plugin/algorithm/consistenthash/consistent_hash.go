@@ -12,8 +12,8 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
-// pluginName 是 consistent_hash 插件注册名。
-const pluginName = "consistent_hash"
+// pluginName 是 ch 插件注册名。
+const pluginName = "ch"
 
 const (
 	fnvOffset64 = 14695981039346656037
@@ -22,8 +22,8 @@ const (
 	baseReplicasPerWeight = 32
 	maxReplicasPerNode    = 512
 
-	reasonAlgorithmConsistentHash = "algorithm=consistent_hash"
-	reasonRingLookup              = "selected_by_consistent_hash_ring"
+	reasonAlgorithmConsistentHash = "algorithm=ch"
+	reasonRingLookup              = "selected_by_ch_ring"
 )
 
 type ringEntry struct {

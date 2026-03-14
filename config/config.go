@@ -17,9 +17,9 @@ const (
 	// 内置算法插件名。
 	AlgorithmRoundRobin         = "rr"
 	AlgorithmWeightedRoundRobin = "wrr"
-	AlgorithmConsistentHash     = "consistent_hash"
+	AlgorithmConsistentHash     = "ch"
 	AlgorithmP2C                = "p2c"
-	AlgorithmLeastRequest       = "least_request"
+	AlgorithmLeastRequest       = "lr"
 
 	// 内置策略插件名。
 	PolicyHealthGate         = "health_gate"

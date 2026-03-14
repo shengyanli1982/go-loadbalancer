@@ -10,16 +10,16 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
-// pluginName 是 least_request 插件注册名。
+// pluginName 是 lr 插件注册名。
 const (
-	pluginName = "least_request"
+	pluginName = "lr"
 
-	reasonAlgorithmLeastRequest      = "algorithm=least_request"
+	reasonAlgorithmLeastRequest      = "algorithm=lr"
 	reasonSortedByInflightQueueError = "sorted_by_inflight_queue_latency_error"
 	reasonCapacity                   = 4
 )
 
-// Plugin 实现 least_request 算法。
+// Plugin 实现 lr 算法。
 type Plugin struct{}
 
 func init() {

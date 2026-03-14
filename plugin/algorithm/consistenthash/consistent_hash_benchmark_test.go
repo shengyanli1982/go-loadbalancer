@@ -7,7 +7,7 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
-// BenchmarkSelectCandidates 基准测试 consistent_hash 选点性能。
+// BenchmarkSelectCandidates 基准测试 ch 选点性能。
 func BenchmarkSelectCandidates(b *testing.B) {
 	plugin := &Plugin{}
 	req := types.RequestContext{
