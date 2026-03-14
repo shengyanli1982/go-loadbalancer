@@ -138,6 +138,7 @@ func DefaultConfig() Config {
 func (c *Config) Validate() error {
 	var errs []error
 
+	// 检查 TopK 是否在允许范围内（1-32）。
 	if c.TopK < 1 || c.TopK > 32 {
 		errs = append(errs, lberrors.NewConfigError(
 			lberrors.CodeInvalidTopK,
@@ -147,6 +148,7 @@ func (c *Config) Validate() error {
 		))
 	}
 
+	// 检查路由类别列表是否为空。
 	if len(c.RouteClasses) == 0 {
 		errs = append(errs, lberrors.NewConfigError(
 			lberrors.CodeInvalidRouteClass,
@@ -157,6 +159,7 @@ func (c *Config) Validate() error {
 	}
 
 	seenRouteClass := make(map[types.RouteClass]struct{}, len(c.RouteClasses))
+	// 验证每个路由类别的有效性和唯一性。
 	for i, rc := range c.RouteClasses {
 		if !isValidRouteClass(rc) {
 			errs = append(errs, lberrors.NewConfigError(
@@ -179,6 +182,7 @@ func (c *Config) Validate() error {
 		seenRouteClass[rc] = struct{}{}
 	}
 
+	// 验证每个路由类别都有对应的算法绑定。
 	for _, rc := range c.RouteClasses {
 		name, ok := c.Plugins.Algorithms[rc]
 		if !ok || name == "" {
@@ -201,6 +205,7 @@ func (c *Config) Validate() error {
 	}
 
 	seenPolicy := make(map[string]struct{}, len(c.Plugins.Policies))
+	// 验证策略的唯一性和注册状态。
 	for i, p := range c.Plugins.Policies {
 		if _, ok := seenPolicy[p]; ok {
 			errs = append(errs, lberrors.NewConfigError(
@@ -222,6 +227,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// 验证目标函数配置（如果启用）。
 	if c.Plugins.Objective.Enabled {
 		if c.Plugins.Objective.Name == "" {
 			errs = append(errs, lberrors.NewConfigError(
@@ -248,6 +254,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// 验证回退链配置。
 	if len(c.FallbackChain) == 0 {
 		errs = append(errs, lberrors.NewConfigError(
 			lberrors.CodeInvalidFallbackChain,
@@ -257,6 +264,7 @@ func (c *Config) Validate() error {
 		))
 	}
 	seenFallback := make(map[string]struct{}, len(c.FallbackChain))
+	// 验证回退链中每个元素的有效性和唯一性。
 	for i, s := range c.FallbackChain {
 		if s == "" {
 			errs = append(errs, lberrors.NewConfigError(
@@ -287,6 +295,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// 验证每个路由类别的权重配置。
 	for _, rc := range c.RouteClasses {
 		weights, ok := c.Weights.ByRouteClass[rc]
 		if !ok {
@@ -299,6 +308,7 @@ func (c *Config) Validate() error {
 			continue
 		}
 		sum := 0
+		// 验证每个权重值的范围，并计算权重总和。
 		for metric, w := range weights {
 			if w < 0 || w > 10000 {
 				errs = append(errs, lberrors.NewConfigError(
@@ -310,6 +320,7 @@ func (c *Config) Validate() error {
 			}
 			sum += w
 		}
+		// 检查权重总和是否为 10000。
 		if sum != 10000 {
 			errs = append(errs, lberrors.NewConfigError(
 				lberrors.CodeInvalidWeightSum,
@@ -319,6 +330,7 @@ func (c *Config) Validate() error {
 			))
 		}
 
+		// 对于 LLM 路由类别，检查是否包含必需的权重项。
 		if rc == types.RouteLLMPrefill || rc == types.RouteLLMDecode {
 			for _, metric := range requiredLLMMetrics {
 				if _, ok := weights[metric]; !ok {
@@ -333,6 +345,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// 如果有任何错误，返回合并的错误列表。
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
