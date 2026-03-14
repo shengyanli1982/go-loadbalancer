@@ -197,6 +197,7 @@ func main() {
 
 ```bash
 go run ./examples/basic-routing
+go run ./examples/algorithm-matrix
 go run ./examples/objective-routing
 go run ./examples/fallback-routing
 go run ./examples/telemetry-sink
@@ -205,6 +206,7 @@ go run ./examples/telemetry-sink
 Examples overview:
 
 - `examples/basic-routing`: minimal and stable generic routing.
+- `examples/algorithm-matrix`: quick runnable matrix for `rr`, `wrr`, `p2c`, `lr`, `ch`.
 - `examples/objective-routing`: objective-enabled LLM prefill routing.
 - `examples/fallback-routing`: policy failure path with fallback chain.
 - `examples/telemetry-sink`: custom telemetry sink integration.
