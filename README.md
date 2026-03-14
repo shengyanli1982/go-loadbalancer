@@ -54,42 +54,78 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 
-	"go-loadbalancer/balancer"
-	"go-loadbalancer/config"
-	"go-loadbalancer/types"
+	"github.com/shengyanli1982/go-loadbalancer/balancer"
+	"github.com/shengyanli1982/go-loadbalancer/config"
+	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
 func main() {
 	lb, err := balancer.New(
 		config.DefaultConfig(),
 		config.WithTopK(5),
-		config.WithAlgorithm(string(types.RouteGeneric), "least_request"),
-		config.WithObjective("weighted_objective", 3, true),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyHealthGate),
 	)
 	if err != nil {
-		panic(err)
+		log.Fatalf("create balancer: %v", err)
 	}
+	defer func() { _ = lb.Close(context.Background()) }()
 
 	req := types.RequestContext{
 		RequestID:  "req-1",
 		TenantID:   "team-a",
+		SessionID:  "session-a",
 		RouteClass: types.RouteGeneric,
+		Model:      "model-a",
 	}
 
 	nodes := []types.NodeSnapshot{
-		{NodeID: "node-a", Healthy: true, Inflight: 10, QueueDepth: 5, P95LatencyMs: 30, ErrorRate: 0.02},
-		{NodeID: "node-b", Healthy: true, Inflight: 3, QueueDepth: 1, P95LatencyMs: 18, ErrorRate: 0.01},
+		{
+			NodeID:            "node-a",
+			Healthy:           true,
+			Inflight:          10,
+			QueueDepth:        5,
+			P95LatencyMs:      30,
+			ErrorRate:         0.02,
+			ModelAvailability: map[string]bool{"model-a": true},
+		},
+		{
+			NodeID:            "node-b",
+			Healthy:           true,
+			Inflight:          3,
+			QueueDepth:        1,
+			P95LatencyMs:      18,
+			ErrorRate:         0.01,
+			ModelAvailability: map[string]bool{"model-a": true},
+		},
 	}
 
 	chosen, err := lb.Route(context.Background(), req, nodes)
 	if err != nil {
-		panic(err)
+		log.Fatalf("route failed: %v", err)
 	}
 
-	fmt.Printf("chosen=%s reason=%v\n", chosen.Node.NodeID, chosen.Reason)
+	fmt.Printf("chosen=%s score=%.2f reason=%v\n", chosen.Node.NodeID, chosen.Score, chosen.Reason)
 }
 ```
+
+### 3) Run ready-to-use examples
+
+```bash
+go run ./examples/basic-routing
+go run ./examples/objective-routing
+go run ./examples/fallback-routing
+go run ./examples/telemetry-sink
+```
+
+Examples overview:
+
+- `examples/basic-routing`: minimal and stable generic routing.
+- `examples/objective-routing`: objective-enabled LLM prefill routing.
+- `examples/fallback-routing`: policy failure path with fallback chain.
+- `examples/telemetry-sink`: custom telemetry sink integration.
 
 ## Reliability by Design
 
