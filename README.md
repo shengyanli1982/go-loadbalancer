@@ -38,6 +38,54 @@ A2X is built for:
 | Objective Plugin  | `weighted_objective` (optional) | Top-K second-pass optimization             |
 | Telemetry         | `Sink`, `NoopSink`              | Clean observability integration boundary   |
 
+## Performance
+
+```bash
+go test -run ^$ -bench . -benchmem ./balancer ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest ./plugin/objective/weighted ./registry
+```
+
+Benchmark environment (measured on 2026-03-14):
+
+- Go `1.24.13`
+- OS/Arch: `windows/amd64`
+- CPU: `12th Gen Intel(R) Core(TM) i5-12400F`
+
+| Benchmark                                                     | ns/op | B/op | allocs/op |
+| ------------------------------------------------------------- | ----: | ---: | --------: |
+| `BenchmarkRoute/serial_nodes_32`                              |  1650 | 2816 |         8 |
+| `BenchmarkRoute/serial_nodes_256`                             |  8900 | 2816 |         8 |
+| `BenchmarkRoute/serial_nodes_1024`                            | 33498 | 2816 |         8 |
+| `BenchmarkRoute/parallel_nodes_256`                           |  2073 | 2816 |         8 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`           | 11865 | 3656 |        15 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`)         | 37353 | 2944 |        10 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`leastrequest`) | 45433 | 3072 |        10 |
+| `BenchmarkChoose` (`plugin/objective/weighted`)               | 336.5 |   16 |         1 |
+| `BenchmarkManagerGetAlgorithm/hit_serial`                     | 16.98 |    0 |         0 |
+| `BenchmarkManagerHasAlgorithm/hit_serial`                     | 16.55 |    0 |         0 |
+
+Algorithm deep-dive benchmark command:
+
+```bash
+go test -run ^$ -bench BenchmarkSelectCandidates -benchmem ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest
+```
+
+| Algorithm | Scenario | ns/op | B/op | allocs/op |
+| --------- | -------- | ----: | ---: | --------: |
+| `p2c` | `nodes_32_topk_1` | 115.6 | 224 | 2 |
+| `p2c` | `nodes_32_topk_8` | 1614 | 2944 | 10 |
+| `p2c` | `nodes_256_topk_8` | 9680 | 2944 | 10 |
+| `p2c` | `nodes_1024_topk_8` | 37353 | 2944 | 10 |
+| `p2c` | `nodes_1024_topk_32` | 23425 | 19808 | 70 |
+| `p2c` | `nodes_4096_topk_32` | 59961 | 19808 | 70 |
+| `leastrequest` | `nodes_32_topk_1` | 395.7 | 352 | 3 |
+| `leastrequest` | `nodes_32_topk_8` | 1881 | 3072 | 10 |
+| `leastrequest` | `nodes_256_topk_8` | 12702 | 3072 | 10 |
+| `leastrequest` | `nodes_1024_topk_8` | 45433 | 3072 | 10 |
+| `leastrequest` | `nodes_1024_topk_32` | 21477 | 21472 | 71 |
+| `leastrequest` | `nodes_4096_topk_32` | 48789 | 21472 | 71 |
+
+Numbers are from a single local run and should be used as a baseline reference. Re-run on your target hardware for production capacity planning.
+
 ## Quick Start
 
 ### 1) Verify your local setup
