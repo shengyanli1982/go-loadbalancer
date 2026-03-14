@@ -67,36 +67,36 @@ Core route benchmarks:
 
 | Benchmark                                                |  ns/op |  B/op | allocs/op |
 | -------------------------------------------------------- | -----: | ----: | --------: |
-| `BenchmarkRoute/serial_nodes_32`                         |  629.0 |  2032 |         4 |
-| `BenchmarkRoute/serial_nodes_256`                        |   1564 |  2032 |         4 |
-| `BenchmarkRoute/serial_nodes_1024`                       |   4713 |  2032 |         4 |
-| `BenchmarkRoute/parallel_nodes_256`                      |  589.8 |  2032 |         4 |
-| `BenchmarkRoute/serial_default_config_nodes_256`         |   2053 |  2016 |         9 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |   3663 |  2888 |        11 |
-| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |   1827 |  2057 |         5 |
+| `BenchmarkRoute/serial_nodes_32`                         |  627.3 |  2032 |         4 |
+| `BenchmarkRoute/serial_nodes_256`                        |   1677 |  2032 |         4 |
+| `BenchmarkRoute/serial_nodes_1024`                       |   4900 |  2032 |         4 |
+| `BenchmarkRoute/parallel_nodes_256`                      |  598.8 |  2032 |         4 |
+| `BenchmarkRoute/serial_default_config_nodes_256`         |   2126 |  2016 |         9 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |   3841 |  2888 |        11 |
+| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |   1892 |  2057 |         5 |
 
 Failure-path benchmarks:
 
 | Benchmark                                              |  ns/op | B/op | allocs/op |
 | ------------------------------------------------------ | -----: | ---: | --------: |
-| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes`   |  21.84 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_no_model_available` |  21.73 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_empty_candidates`   |  618.5 |   56 |         2 |
-| `BenchmarkRouteFailurePaths/serial_algorithm_error`    |  721.6 |  168 |         6 |
+| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes`   |  21.90 |    0 |         0 |
+| `BenchmarkRouteFailurePaths/serial_no_model_available` |  21.44 |    0 |         0 |
+| `BenchmarkRouteFailurePaths/serial_empty_candidates`   |  628.4 |   56 |         2 |
+| `BenchmarkRouteFailurePaths/serial_algorithm_error`    |  718.6 |  168 |         6 |
 
 Selected component benchmarks:
 
 | Benchmark                                             |   ns/op |  B/op | allocs/op |
 | ----------------------------------------------------- | ------: | ----: | --------: |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`) |   409.9 |  1792 |         9 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`) |   410.5 |  1792 |         9 |
 | `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`) |  19798 |  2816 |        10 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`) | 186160 | 29280 |        14 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`) |   4374 |  3136 |        11 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`) |   2669 |  3392 |         4 |
-| `BenchmarkChoose` (`plugin/objective/weighted`)       |   347.2 |    16 |         1 |
-| `BenchmarkManagerGetAlgorithm/hit_serial`             |   17.03 |     0 |         0 |
-| `BenchmarkManagerHasAlgorithm/hit_serial`             |   16.64 |     0 |         0 |
-| `BenchmarkManagerRegisterAlgorithmParallel`           |   359.5 |   121 |         1 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`) |   3100 |  1920 |         3 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`) |   4434 |  3136 |        11 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`) |   2629 |  3392 |         4 |
+| `BenchmarkChoose` (`plugin/objective/weighted`)       |   339.7 |    16 |         1 |
+| `BenchmarkManagerGetAlgorithm/hit_serial`             |   16.80 |     0 |         0 |
+| `BenchmarkManagerHasAlgorithm/hit_serial`             |   16.62 |     0 |         0 |
+| `BenchmarkManagerRegisterAlgorithmParallel`           |   361.9 |   124 |         1 |
 
 Algorithm deep-dive benchmark command:
 
@@ -104,7 +104,7 @@ Algorithm deep-dive benchmark command:
 go test -run ^$ -bench BenchmarkSelectCandidates -benchmem ./plugin/algorithm/rr ./plugin/algorithm/wrr ./plugin/algorithm/consistenthash ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest
 ```
 
-Raw benchmark logs used for this section are saved under `artifacts/perf/20260314-readme/`.
+Raw benchmark logs used for this section are saved under `artifacts/perf/20260314-readme-refresh-chash/`.
 
 Numbers are from a single local run and should be used as a baseline reference. Re-run on your target hardware for production capacity planning.
 
