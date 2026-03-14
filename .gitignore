@@ -34,4 +34,4 @@ go.work.sum
 # projects
 docs/
 .serena
-
+.tmp
