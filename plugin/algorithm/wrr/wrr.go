@@ -20,17 +20,24 @@ const (
 	reasonWeightFallback   = "filled_by_weight_order_fallback"
 )
 
-// Plugin 实现 smooth weighted round robin 算法。
+// Plugin 实现 weighted round robin 算法。
 type Plugin struct {
 	mu    sync.Mutex
 	state topologyState
 }
 
+type nodeState struct {
+	nodeID string
+	weight int
+}
+
 type topologyState struct {
+	signature   []nodeState
 	nodeIDs     []string
 	weights     []int
 	currents    []int
-	canonical   []int
+	nodeIndices []int
+	weightOrder []int
 	totalWeight int
 }
 
@@ -43,7 +50,7 @@ func (*Plugin) Name() string {
 	return pluginName
 }
 
-// SelectCandidates 按 smooth weighted round robin 返回候选节点。
+// SelectCandidates 返回候选节点：首个候选由 smooth WRR 选出，其余按权重序补齐。
 func (p *Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapshot, topK int) ([]types.Candidate, error) {
 	if topK <= 0 {
 		return nil, fmt.Errorf("topK=%d: %w", topK, lberrors.ErrPluginMisconfigured)
@@ -52,81 +59,68 @@ func (p *Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnap
 		return nil, lberrors.ErrNoCandidate
 	}
 
-	limit := topK
-	if limit > len(nodes) {
-		limit = len(nodes)
-	}
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.ensureState(nodes)
+	if len(p.state.nodeIDs) == 0 {
+		return nil, lberrors.ErrNoCandidate
+	}
 
-	selectedCanonical := make([]bool, len(nodes))
+	limit := topK
+	if limit > len(p.state.nodeIDs) {
+		limit = len(p.state.nodeIDs)
+	}
+
+	reasonBuffer := make([]string, limit*2)
 	out := make([]types.Candidate, 0, limit)
-	for len(out) < limit {
-		bestIdx := -1
-		bestCurrent := 0
 
-		for i := 0; i < len(nodes); i++ {
-			canonicalIdx := p.state.canonical[i]
-			if selectedCanonical[canonicalIdx] {
-				continue
-			}
-
-			p.state.currents[i] += p.state.weights[i]
-			current := p.state.currents[i]
-			if bestIdx == -1 || current > bestCurrent || (current == bestCurrent && p.state.nodeIDs[i] < p.state.nodeIDs[bestIdx]) {
-				bestIdx = i
-				bestCurrent = current
-			}
+	bestIdx := -1
+	bestCurrent := 0
+	for i := 0; i < len(p.state.nodeIDs); i++ {
+		p.state.currents[i] += p.state.weights[i]
+		current := p.state.currents[i]
+		if bestIdx == -1 || current > bestCurrent || (current == bestCurrent && p.state.nodeIDs[i] < p.state.nodeIDs[bestIdx]) {
+			bestIdx = i
+			bestCurrent = current
 		}
-		if bestIdx == -1 {
+	}
+	if bestIdx == -1 {
+		return nil, lberrors.ErrNoCandidate
+	}
+	p.state.currents[bestIdx] -= p.state.totalWeight
+
+	firstReason := reasonBuffer[:2:2]
+	firstReason[0] = reasonAlgorithmWRR
+	firstReason[1] = reasonSmoothWeightedRR
+	out = append(out, types.Candidate{
+		Node:   nodes[p.state.nodeIndices[bestIdx]],
+		Score:  float64(p.state.weights[bestIdx]),
+		Reason: firstReason,
+	})
+
+	for _, idx := range p.state.weightOrder {
+		if len(out) >= limit {
 			break
 		}
-
-		p.state.currents[bestIdx] -= p.state.totalWeight
-		selectedCanonical[p.state.canonical[bestIdx]] = true
-		out = append(out, types.Candidate{
-			Node:   nodes[bestIdx],
-			Score:  float64(p.state.weights[bestIdx]),
-			Reason: []string{reasonAlgorithmWRR, reasonSmoothWeightedRR},
-		})
-	}
-
-	if len(out) == limit {
-		return out, nil
-	}
-
-	remaining := make([]int, 0, len(nodes)-len(out))
-	for i := 0; i < len(nodes); i++ {
-		if selectedCanonical[p.state.canonical[i]] {
+		if idx == bestIdx {
 			continue
 		}
-		remaining = append(remaining, i)
-	}
-	sort.Slice(remaining, func(i, j int) bool {
-		wi := p.state.weights[remaining[i]]
-		wj := p.state.weights[remaining[j]]
-		if wi != wj {
-			return wi > wj
-		}
-		return p.state.nodeIDs[remaining[i]] < p.state.nodeIDs[remaining[j]]
-	})
-	for i := 0; i < len(remaining) && len(out) < limit; i++ {
-		idx := remaining[i]
-		selectedCanonical[p.state.canonical[idx]] = true
+		reasonOffset := len(out) * 2
+		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+2]
+		reason[0] = reasonAlgorithmWRR
+		reason[1] = reasonWeightFallback
 		out = append(out, types.Candidate{
-			Node:   nodes[idx],
+			Node:   nodes[p.state.nodeIndices[idx]],
 			Score:  float64(p.state.weights[idx]),
-			Reason: []string{reasonAlgorithmWRR, reasonWeightFallback},
+			Reason: reason,
 		})
 	}
 
 	return out, nil
 }
 
-func effectiveWeight(node types.NodeSnapshot) int {
+func effectiveWeight(node *types.NodeSnapshot) int {
 	if node.StaticWeight <= 0 {
 		return 1
 	}
@@ -134,44 +128,68 @@ func effectiveWeight(node types.NodeSnapshot) int {
 }
 
 func (p *Plugin) ensureState(nodes []types.NodeSnapshot) {
-	if len(p.state.nodeIDs) == len(nodes) {
-		same := true
-		for i := 0; i < len(nodes); i++ {
-			if p.state.nodeIDs[i] != nodes[i].NodeID || p.state.weights[i] != effectiveWeight(nodes[i]) {
-				same = false
-				break
-			}
+	if nodesEqualState(nodes, p.state.signature) {
+		return
+	}
+
+	state := topologyState{
+		signature: make([]nodeState, len(nodes)),
+	}
+
+	firstIndexByNodeID := make(map[string]int, len(nodes))
+	for i := 0; i < len(nodes); i++ {
+		node := &nodes[i]
+		weight := effectiveWeight(node)
+		state.signature[i] = nodeState{
+			nodeID: node.NodeID,
+			weight: weight,
 		}
-		if same {
-			return
+		if _, exists := firstIndexByNodeID[node.NodeID]; !exists {
+			firstIndexByNodeID[node.NodeID] = i
+			state.nodeIDs = append(state.nodeIDs, node.NodeID)
+			state.weights = append(state.weights, weight)
+			state.currents = append(state.currents, 0)
+			state.nodeIndices = append(state.nodeIndices, i)
 		}
 	}
 
-	n := len(nodes)
-	state := topologyState{
-		nodeIDs:   make([]string, n),
-		weights:   make([]int, n),
-		currents:  make([]int, n),
-		canonical: make([]int, n),
+	state.weightOrder = make([]int, len(state.nodeIDs))
+	for i := 0; i < len(state.nodeIDs); i++ {
+		state.weightOrder[i] = i
 	}
-	total := 0
-	firstIndexByNodeID := make(map[string]int, n)
-	for i := 0; i < n; i++ {
-		state.nodeIDs[i] = nodes[i].NodeID
-		state.weights[i] = effectiveWeight(nodes[i])
-		if first, ok := firstIndexByNodeID[state.nodeIDs[i]]; ok {
-			state.canonical[i] = first
-		} else {
-			firstIndexByNodeID[state.nodeIDs[i]] = i
-			state.canonical[i] = i
+	sort.Slice(state.weightOrder, func(i, j int) bool {
+		wi := state.weights[state.weightOrder[i]]
+		wj := state.weights[state.weightOrder[j]]
+		if wi != wj {
+			return wi > wj
 		}
+		return state.nodeIDs[state.weightOrder[i]] < state.nodeIDs[state.weightOrder[j]]
+	})
+
+	total := 0
+	for i := 0; i < len(state.weights); i++ {
 		total += state.weights[i]
 	}
 	if total <= 0 {
-		total = n
+		total = len(state.weights)
 	}
 	state.totalWeight = total
 	p.state = state
+}
+
+func nodesEqualState(nodes []types.NodeSnapshot, signature []nodeState) bool {
+	if len(nodes) != len(signature) {
+		return false
+	}
+	for i := 0; i < len(nodes); i++ {
+		if nodes[i].NodeID != signature[i].nodeID {
+			return false
+		}
+		if effectiveWeight(&nodes[i]) != signature[i].weight {
+			return false
+		}
+	}
+	return true
 }
 
 var _ algorithm.Plugin = (*Plugin)(nil)

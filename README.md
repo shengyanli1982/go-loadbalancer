@@ -65,46 +65,44 @@ Benchmark environment (measured on 2026-03-14):
 
 Core route benchmarks:
 
-| Benchmark                                                |  ns/op |  B/op | allocs/op |
-| -------------------------------------------------------- | -----: | ----: | --------: |
-| `BenchmarkRoute/serial_nodes_32`                         |  627.3 |  2032 |         4 |
-| `BenchmarkRoute/serial_nodes_256`                        |   1677 |  2032 |         4 |
-| `BenchmarkRoute/serial_nodes_1024`                       |   4900 |  2032 |         4 |
-| `BenchmarkRoute/parallel_nodes_256`                      |  598.8 |  2032 |         4 |
-| `BenchmarkRoute/serial_default_config_nodes_256`         |   2126 |  2016 |         9 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |   3841 |  2888 |        11 |
-| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |   1892 |  2057 |         5 |
+| Benchmark                                                | ns/op | B/op | allocs/op |
+| -------------------------------------------------------- | ----: | ---: | --------: |
+| `BenchmarkRoute/serial_nodes_32`                         | 663.7 | 2032 |         4 |
+| `BenchmarkRoute/serial_nodes_256`                        |  1751 | 2032 |         4 |
+| `BenchmarkRoute/serial_nodes_1024`                       |  5034 | 2032 |         4 |
+| `BenchmarkRoute/parallel_nodes_256`                      | 602.8 | 2032 |         4 |
+| `BenchmarkRoute/serial_default_config_nodes_256`         |  2175 | 2016 |         9 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |  3858 | 2888 |        11 |
+| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |  1922 | 2057 |         5 |
 
 Failure-path benchmarks:
 
-| Benchmark                                              |  ns/op | B/op | allocs/op |
-| ------------------------------------------------------ | -----: | ---: | --------: |
-| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes`   |  21.90 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_no_model_available` |  21.44 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_empty_candidates`   |  628.4 |   56 |         2 |
-| `BenchmarkRouteFailurePaths/serial_algorithm_error`    |  718.6 |  168 |         6 |
+| Benchmark                                              | ns/op | B/op | allocs/op |
+| ------------------------------------------------------ | ----: | ---: | --------: |
+| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes`   | 22.23 |    0 |         0 |
+| `BenchmarkRouteFailurePaths/serial_no_model_available` | 21.80 |    0 |         0 |
+| `BenchmarkRouteFailurePaths/serial_empty_candidates`   | 903.3 |   56 |         2 |
+| `BenchmarkRouteFailurePaths/serial_algorithm_error`    |  1046 |  168 |         6 |
 
 Selected component benchmarks:
 
-| Benchmark                                             |   ns/op |  B/op | allocs/op |
-| ----------------------------------------------------- | ------: | ----: | --------: |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`) |   410.5 |  1792 |         9 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`) |  19798 |  2816 |        10 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`) |   3100 |  1920 |         3 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`) |   4434 |  3136 |        11 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`) |   2629 |  3392 |         4 |
-| `BenchmarkChoose` (`plugin/objective/weighted`)       |   339.7 |    16 |         1 |
-| `BenchmarkManagerGetAlgorithm/hit_serial`             |   16.80 |     0 |         0 |
-| `BenchmarkManagerHasAlgorithm/hit_serial`             |   16.62 |     0 |         0 |
-| `BenchmarkManagerRegisterAlgorithmParallel`           |   361.9 |   124 |         1 |
+| Benchmark                                             | ns/op | B/op | allocs/op |
+| ----------------------------------------------------- | ----: | ---: | --------: |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`)  | 367.7 | 1792 |         2 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`) |  4060 | 1792 |         2 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`)  |  3091 | 1920 |         3 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`) |  4045 | 1856 |         3 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`)  |  2622 | 2112 |         3 |
+| `BenchmarkChoose` (`plugin/objective/weighted`)       | 375.0 |   16 |         1 |
+| `BenchmarkManagerGetAlgorithm/hit_serial`             | 21.93 |    0 |         0 |
+| `BenchmarkManagerHasAlgorithm/hit_serial`             | 16.75 |    0 |         0 |
+| `BenchmarkManagerRegisterAlgorithmParallel`           | 484.7 |  163 |         1 |
 
 Algorithm deep-dive benchmark command:
 
 ```bash
 go test -run ^$ -bench BenchmarkSelectCandidates -benchmem ./plugin/algorithm/rr ./plugin/algorithm/wrr ./plugin/algorithm/consistenthash ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest
 ```
-
-Raw benchmark logs used for this section are saved under `artifacts/perf/20260314-readme-refresh-chash/`.
 
 Numbers are from a single local run and should be used as a baseline reference. Re-run on your target hardware for production capacity planning.
 
@@ -235,3 +233,11 @@ Validation includes:
 - BPS weight bounds and per-route-class weight sum
 - required LLM metrics (`ttft`, `tpot`, `kv_hit`)
 - aggregated multi-error return via `errors.Join`
+
+## API Reference
+
+- GoDoc: <https://pkg.go.dev/github.com/shengyanli1982/go-loadbalancer>
+
+## DeepWiki
+
+- <https://deepwiki.com/shengyanli1982/go-loadbalancer>
