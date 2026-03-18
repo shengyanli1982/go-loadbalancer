@@ -2,6 +2,7 @@ package llmkvaffinity
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/shengyanli1982/go-loadbalancer/plugin/policy"
 	"github.com/shengyanli1982/go-loadbalancer/registry"
@@ -12,8 +13,11 @@ import (
 const pluginName = "llm_kv_affinity"
 
 const (
+	MetadataPreferredNodesKey = "llm_kv_affinity_preferred_nodes"
+
 	reasonApplied = "policy=llm_kv_affinity"
 	reasonSkipped = "policy=llm_kv_affinity_skipped_non_llm"
+	reasonHinted  = "policy=llm_kv_affinity_request_hint"
 )
 
 // Plugin 实现 KV 命中优先重排策略。
@@ -42,8 +46,14 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 		return out, nil
 	}
 
+	preferredNodes := parsePreferredNodes(req.Metadata)
 	sort.SliceStable(out, func(i, j int) bool {
 		ai, aj := out[i].Node, out[j].Node
+		aiPreferred := preferredNodes[ai.NodeID]
+		ajPreferred := preferredNodes[aj.NodeID]
+		if aiPreferred != ajPreferred {
+			return aiPreferred
+		}
 		if ai.KVCacheHitRate != aj.KVCacheHitRate {
 			return ai.KVCacheHitRate > aj.KVCacheHitRate
 		}
@@ -53,12 +63,45 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 		if ai.QueueDepth != aj.QueueDepth {
 			return ai.QueueDepth < aj.QueueDepth
 		}
-		return ai.NodeID < aj.NodeID
+		return false
 	})
 	for i := range out {
 		out[i].Reason = append(out[i].Reason, reasonApplied)
+		if preferredNodes[out[i].Node.NodeID] {
+			out[i].Reason = append(out[i].Reason, reasonHinted)
+		}
 	}
 	return out, nil
+}
+
+func parsePreferredNodes(metadata map[string]string) map[string]bool {
+	if len(metadata) == 0 {
+		return nil
+	}
+	raw, ok := metadata[MetadataPreferredNodesKey]
+	if !ok || raw == "" {
+		return nil
+	}
+
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
+	})
+	if len(fields) == 0 {
+		return nil
+	}
+
+	preferred := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		nodeID := strings.TrimSpace(field)
+		if nodeID == "" {
+			continue
+		}
+		preferred[nodeID] = true
+	}
+	if len(preferred) == 0 {
+		return nil
+	}
+	return preferred
 }
 
 var _ policy.Plugin = Plugin{}

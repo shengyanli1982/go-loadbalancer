@@ -3,8 +3,11 @@ package balancer_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/shengyanli1982/go-loadbalancer/balancer"
 	"github.com/shengyanli1982/go-loadbalancer/config"
@@ -18,6 +21,7 @@ const (
 	benchmarkMetadataMaxQueueKey    = "tenant_quota_max_queue"
 	benchmarkAlgorithmEmpty         = "bench_empty_candidates"
 	benchmarkAlgorithmError         = "bench_error_candidates"
+	benchmarkObjectiveSleep         = "bench_sleep_objective"
 )
 
 var benchmarkModelASet = types.NewModelCapabilitySet(map[string]bool{"model-a": true})
@@ -42,9 +46,24 @@ func (benchmarkErrorCandidateAlgorithm) SelectCandidates(_ types.RequestContext,
 	return nil, lberrors.ErrNoCandidate
 }
 
+type benchmarkSleepObjective struct{}
+
+func (benchmarkSleepObjective) Name() string {
+	return benchmarkObjectiveSleep
+}
+
+func (benchmarkSleepObjective) Choose(_ types.RequestContext, candidates []types.Candidate) (types.Candidate, error) {
+	time.Sleep(300 * time.Microsecond)
+	if len(candidates) == 0 {
+		return types.Candidate{}, lberrors.ErrNoCandidate
+	}
+	return candidates[0], nil
+}
+
 func init() {
 	registry.MustRegisterAlgorithm(benchmarkEmptyCandidateAlgorithm{})
 	registry.MustRegisterAlgorithm(benchmarkErrorCandidateAlgorithm{})
+	registry.MustRegisterObjective(benchmarkSleepObjective{})
 }
 
 func BenchmarkRoute(b *testing.B) {
@@ -68,6 +87,21 @@ func BenchmarkRoute(b *testing.B) {
 	})
 	b.Run("serial_fallback_policy_ranked_nodes_256", func(b *testing.B) {
 		benchmarkRouteSerialFallbackPolicyRanked(b, 256)
+	})
+	b.Run("parallel_objective_guard_max_concurrent_1_nodes_256", func(b *testing.B) {
+		benchmarkRouteParallelObjectiveGuard(b, 256, 1)
+	})
+	b.Run("parallel_objective_guard_max_concurrent_64_nodes_256", func(b *testing.B) {
+		benchmarkRouteParallelObjectiveGuard(b, 256, 64)
+	})
+}
+
+func BenchmarkRouteObjectiveGuardLatency(b *testing.B) {
+	b.Run("max_concurrent_1_nodes_256", func(b *testing.B) {
+		benchmarkRouteParallelObjectiveGuardWithLatency(b, 256, 1)
+	})
+	b.Run("max_concurrent_64_nodes_256", func(b *testing.B) {
+		benchmarkRouteParallelObjectiveGuardWithLatency(b, 256, 64)
 	})
 }
 
@@ -183,6 +217,77 @@ func benchmarkRouteSerialFallbackPolicyRanked(b *testing.B, nodeCount int) {
 	benchmarkRouteSerialRun(b, lb, req, nodes)
 }
 
+func benchmarkRouteParallelObjectiveGuard(b *testing.B, nodeCount int, maxConcurrent int) {
+	lb := benchmarkMustNewBalancer(
+		b,
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyHealthGate),
+		config.WithObjective(benchmarkObjectiveSleep, 200, true),
+		config.WithObjectiveMaxConcurrent(maxConcurrent),
+	)
+	nodes := benchmarkRouteNodes(nodeCount)
+	req := benchmarkRouteRequest()
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, err := lb.Route(ctx, req, nodes); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func benchmarkRouteParallelObjectiveGuardWithLatency(b *testing.B, nodeCount int, maxConcurrent int) {
+	lb := benchmarkMustNewBalancer(
+		b,
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyHealthGate),
+		config.WithObjective(benchmarkObjectiveSleep, 200, true),
+		config.WithObjectiveMaxConcurrent(maxConcurrent),
+	)
+	nodes := benchmarkRouteNodes(nodeCount)
+	req := benchmarkRouteRequest()
+	ctx := context.Background()
+	latencies := make([]int64, b.N)
+	var idx atomic.Int64
+
+	started := time.Now()
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			routeStarted := time.Now()
+			if _, err := lb.Route(ctx, req, nodes); err != nil {
+				b.Fatal(err)
+			}
+			n := idx.Add(1) - 1
+			if n >= int64(len(latencies)) {
+				continue
+			}
+			latencies[n] = time.Since(routeStarted).Nanoseconds()
+		}
+	})
+	b.StopTimer()
+
+	total := int(idx.Load())
+	if total <= 0 {
+		return
+	}
+
+	sampled := latencies[:total]
+	sort.Slice(sampled, func(i, j int) bool { return sampled[i] < sampled[j] })
+	p95 := percentileNs(sampled, 95)
+	p99 := percentileNs(sampled, 99)
+	elapsed := time.Since(started)
+
+	b.ReportMetric(float64(total)/elapsed.Seconds(), "req/s")
+	b.ReportMetric(float64(p95)/1e6, "p95_ms")
+	b.ReportMetric(float64(p99)/1e6, "p99_ms")
+}
+
 func benchmarkMustNewBalancer(b *testing.B, opts ...config.Option) balancer.Balancer {
 	b.Helper()
 	lb, err := balancer.New(
@@ -226,6 +331,20 @@ func benchmarkRouteSerialExpectError(b *testing.B, lb balancer.Balancer, req typ
 			b.Fatalf("expect error %v, got %v", target, err)
 		}
 	}
+}
+
+func percentileNs(values []int64, percentile int) int64 {
+	if len(values) == 0 {
+		return 0
+	}
+	if percentile <= 0 {
+		return values[0]
+	}
+	if percentile >= 100 {
+		return values[len(values)-1]
+	}
+	rank := (len(values) - 1) * percentile / 100
+	return values[rank]
 }
 
 func benchmarkRouteRequest() types.RequestContext {

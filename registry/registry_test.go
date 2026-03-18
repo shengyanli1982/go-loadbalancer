@@ -64,6 +64,59 @@ func TestRegisterDuplicatePlugin(t *testing.T) {
 	assert.ErrorIs(t, err, lberrors.ErrDuplicatePlugin)
 }
 
+// TestRegisterFactoryAndLookup 验证工厂注册后可查询且 Has 接口可见。
+func TestRegisterFactoryAndLookup(t *testing.T) {
+	m := registry.NewManager()
+	require.NoError(t, m.RegisterAlgorithmFactory("algo_factory", func() algorithm.Plugin { return algorithmStub{name: "algo_factory"} }))
+	require.NoError(t, m.RegisterPolicyFactory("policy_factory", func() policy.Plugin { return policyStub{name: "policy_factory"} }))
+	require.NoError(t, m.RegisterObjectiveFactory("objective_factory", func() objective.Plugin { return objectiveStub{name: "objective_factory"} }))
+
+	algoCtor, ok := m.GetAlgorithmFactory("algo_factory")
+	require.True(t, ok)
+	require.NotNil(t, algoCtor)
+	assert.Equal(t, "algo_factory", algoCtor().Name())
+	assert.True(t, m.HasAlgorithm("algo_factory"))
+
+	policyCtor, ok := m.GetPolicyFactory("policy_factory")
+	require.True(t, ok)
+	require.NotNil(t, policyCtor)
+	assert.Equal(t, "policy_factory", policyCtor().Name())
+	assert.True(t, m.HasPolicy("policy_factory"))
+
+	objectiveCtor, ok := m.GetObjectiveFactory("objective_factory")
+	require.True(t, ok)
+	require.NotNil(t, objectiveCtor)
+	assert.Equal(t, "objective_factory", objectiveCtor().Name())
+	assert.True(t, m.HasObjective("objective_factory"))
+}
+
+// TestRegisterFactoryPrototypeConflict 验证同名工厂与原型互斥注册。
+func TestRegisterFactoryPrototypeConflict(t *testing.T) {
+	t.Run("prototype_then_factory", func(t *testing.T) {
+		m := registry.NewManager()
+		require.NoError(t, m.RegisterAlgorithm(algorithmStub{name: "dup_algo"}))
+		err := m.RegisterAlgorithmFactory("dup_algo", func() algorithm.Plugin { return algorithmStub{name: "dup_algo"} })
+		require.Error(t, err)
+		assert.ErrorIs(t, err, lberrors.ErrDuplicatePlugin)
+	})
+
+	t.Run("factory_then_prototype", func(t *testing.T) {
+		m := registry.NewManager()
+		require.NoError(t, m.RegisterPolicyFactory("dup_policy", func() policy.Plugin { return policyStub{name: "dup_policy"} }))
+		err := m.RegisterPolicy(policyStub{name: "dup_policy"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, lberrors.ErrDuplicatePlugin)
+	})
+
+	t.Run("objective_conflict", func(t *testing.T) {
+		m := registry.NewManager()
+		require.NoError(t, m.RegisterObjective(objectiveStub{name: "dup_objective"}))
+		err := m.RegisterObjectiveFactory("dup_objective", func() objective.Plugin { return objectiveStub{name: "dup_objective"} })
+		require.Error(t, err)
+		assert.ErrorIs(t, err, lberrors.ErrDuplicatePlugin)
+	})
+}
+
 // TestConcurrentRegisterAndRead 验证并发注册与读取不会破坏可见性。
 func TestConcurrentRegisterAndRead(t *testing.T) {
 	m := registry.NewManager()

@@ -31,6 +31,11 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+// IsHardConstraint 标记 tenant_quota 为硬约束策略，回退链不可绕过。
+func (Plugin) IsHardConstraint() bool {
+	return true
+}
+
 // ReRank 根据请求中的租户配额对候选进行过滤。
 func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	if len(candidates) == 0 {

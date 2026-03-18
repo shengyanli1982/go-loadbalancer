@@ -3,7 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
+	"github.com/go-playground/validator/v10"
 	lberrors "github.com/shengyanli1982/go-loadbalancer/errors"
 	"github.com/shengyanli1982/go-loadbalancer/registry"
 	"github.com/shengyanli1982/go-loadbalancer/telemetry"
@@ -46,6 +49,7 @@ const (
 	FieldPluginsPolicies         = "plugins.policies"
 	FieldPluginsObjectiveName    = "plugins.objective.name"
 	FieldPluginsObjectiveTimeout = "plugins.objective.timeout_ms"
+	FieldPluginsObjectiveMaxConc = "plugins.objective.max_concurrent"
 	FieldFallbackChain           = "fallback_chain"
 	FieldWeights                 = "weights"
 )
@@ -56,11 +60,91 @@ var requiredLLMMetrics = [...]string{
 	MetricKVHit,
 }
 
+var cfgValidator = validator.New(validator.WithRequiredStructEnabled())
+
+type basicValidationView struct {
+	TopK             int                `validate:"min=1,max=32"`
+	RouteClasses     []types.RouteClass `validate:"min=1,unique,dive,oneof=generic llm-prefill llm-decode"`
+	FallbackChain    []string           `validate:"min=1,unique,dive,required"`
+	Policies         []string           `validate:"unique,dive,required"`
+	ObjectiveName    *string            `validate:"omitempty,min=1"`
+	ObjectiveTimeout *int               `validate:"omitempty,min=1,max=200"`
+	ObjectiveMaxConc *int               `validate:"omitempty,min=1,max=2048"`
+}
+
+type validationErrorMapping struct {
+	code       string
+	field      string
+	constraint string
+	value      func(*Config) any
+}
+
+var basicValidationErrorMappings = map[string]validationErrorMapping{
+	"TopK": {
+		code:       lberrors.CodeInvalidTopK,
+		field:      FieldTopK,
+		constraint: "must be between 1 and 32",
+		value: func(c *Config) any {
+			return c.TopK
+		},
+	},
+	"ObjectiveTimeout": {
+		code:       lberrors.CodeInvalidObjectiveTimeout,
+		field:      FieldPluginsObjectiveTimeout,
+		constraint: "must be between 1 and 200",
+		value: func(c *Config) any {
+			return c.Plugins.Objective.TimeoutMs
+		},
+	},
+	"ObjectiveMaxConc": {
+		code:       lberrors.CodeInvalidObjective,
+		field:      FieldPluginsObjectiveMaxConc,
+		constraint: "must be between 1 and 2048 when set",
+		value: func(c *Config) any {
+			return c.Plugins.Objective.MaxConcurrent
+		},
+	},
+	"RouteClasses": {
+		code:       lberrors.CodeInvalidRouteClass,
+		field:      FieldRouteClasses,
+		constraint: "must not be empty",
+		value: func(c *Config) any {
+			return c.RouteClasses
+		},
+	},
+	"FallbackChain": {
+		code:       lberrors.CodeInvalidFallbackChain,
+		field:      FieldFallbackChain,
+		constraint: "must not be empty",
+		value: func(c *Config) any {
+			return c.FallbackChain
+		},
+	},
+	"Policies": {
+		code:       lberrors.CodeDuplicatePolicy,
+		field:      FieldPluginsPolicies,
+		constraint: "policy must be unique",
+		value: func(c *Config) any {
+			return c.Plugins.Policies
+		},
+	},
+	"ObjectiveName": {
+		code:       lberrors.CodeInvalidObjective,
+		field:      FieldPluginsObjectiveName,
+		constraint: "must not be empty when objective is enabled",
+		value: func(c *Config) any {
+			return c.Plugins.Objective.Name
+		},
+	},
+}
+
 // ObjectiveConfig 定义目标函数插件配置。
 type ObjectiveConfig struct {
 	Enabled   bool
 	Name      string
 	TimeoutMs int
+	// MaxConcurrent 为 objective 并发上限。0 表示使用 balancer 内置默认值。
+	MaxConcurrent int
 }
 
 // PluginConfig 定义插件绑定关系。
@@ -77,12 +161,13 @@ type WeightConfig struct {
 
 // Config 定义 A2X 核心配置。
 type Config struct {
-	TopK          int
-	RouteClasses  []types.RouteClass
-	FallbackChain []string
-	Plugins       PluginConfig
-	Weights       WeightConfig
-	TelemetrySink telemetry.Sink
+	TopK             int
+	RouteClasses     []types.RouteClass
+	FallbackChain    []string
+	SnapshotTTLGuard bool
+	Plugins          PluginConfig
+	Weights          WeightConfig
+	TelemetrySink    telemetry.Sink
 }
 
 // Option 定义配置函数式选项。
@@ -97,18 +182,26 @@ func DefaultConfig() Config {
 			types.RouteLLMPrefill,
 			types.RouteLLMDecode,
 		},
-		FallbackChain: []string{FallbackPolicyRanked, AlgorithmLeastRequest, AlgorithmP2C},
+		FallbackChain:    []string{FallbackPolicyRanked, AlgorithmLeastRequest, AlgorithmP2C},
+		SnapshotTTLGuard: false,
 		Plugins: PluginConfig{
 			Algorithms: map[types.RouteClass]string{
 				types.RouteGeneric:    AlgorithmP2C,
 				types.RouteLLMPrefill: AlgorithmLeastRequest,
 				types.RouteLLMDecode:  AlgorithmLeastRequest,
 			},
-			Policies: []string{PolicyHealthGate, PolicyTenantQuota},
+			Policies: []string{
+				PolicyHealthGate,
+				PolicyTenantQuota,
+				PolicyLLMTokenAwareQueue,
+				PolicyLLMStageAware,
+				PolicyLLMKVAffinity,
+			},
 			Objective: ObjectiveConfig{
-				Enabled:   false,
-				Name:      ObjectiveWeighted,
-				TimeoutMs: 3,
+				Enabled:       false,
+				Name:          ObjectiveWeighted,
+				TimeoutMs:     3,
+				MaxConcurrent: 128,
 			},
 		},
 		Weights: WeightConfig{
@@ -143,212 +236,15 @@ func DefaultConfig() Config {
 // Validate 对配置执行强校验。
 func (c *Config) Validate() error {
 	var errs []error
+	errs = append(errs, validateBasicFields(c)...)
+	errs = append(errs, validateAlgorithmBindings(c)...)
+	errs = append(errs, validatePolicyRegistrations(c)...)
+	errs = append(errs, validateObjectiveRegistration(c)...)
+	errs = append(errs, validateFallbackRegistrations(c)...)
 
-	// 检查 TopK 是否在允许范围内（1-32）。
-	if c.TopK < 1 || c.TopK > 32 {
-		errs = append(errs, lberrors.NewConfigError(
-			lberrors.CodeInvalidTopK,
-			FieldTopK,
-			c.TopK,
-			"must be between 1 and 32",
-		))
-	}
-
-	// 检查路由类别列表是否为空。
-	if len(c.RouteClasses) == 0 {
-		errs = append(errs, lberrors.NewConfigError(
-			lberrors.CodeInvalidRouteClass,
-			FieldRouteClasses,
-			c.RouteClasses,
-			"must not be empty",
-		))
-	}
-
-	seenRouteClass := make(map[types.RouteClass]struct{}, len(c.RouteClasses))
-	// 验证每个路由类别的有效性和唯一性。
-	for i, rc := range c.RouteClasses {
-		if !isValidRouteClass(rc) {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidRouteClass,
-				fmt.Sprintf("%s[%d]", FieldRouteClasses, i),
-				rc,
-				"must be one of generic,llm-prefill,llm-decode",
-			))
-			continue
-		}
-		if _, ok := seenRouteClass[rc]; ok {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidRouteClass,
-				fmt.Sprintf("%s[%d]", FieldRouteClasses, i),
-				rc,
-				"must not contain duplicates",
-			))
-			continue
-		}
-		seenRouteClass[rc] = struct{}{}
-	}
-
-	// 验证每个路由类别都有对应的算法绑定。
-	for _, rc := range c.RouteClasses {
-		name, ok := c.Plugins.Algorithms[rc]
-		if !ok || name == "" {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeMissingAlgorithmBinding,
-				fmt.Sprintf("%s.%s", FieldPluginsAlgorithms, rc),
-				name,
-				"must bind one algorithm per route class",
-			))
-			continue
-		}
-		if !registry.HasAlgorithm(name) {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeMissingAlgorithmBinding,
-				fmt.Sprintf("%s.%s", FieldPluginsAlgorithms, rc),
-				name,
-				"algorithm is not registered",
-			))
-		}
-	}
-
-	seenPolicy := make(map[string]struct{}, len(c.Plugins.Policies))
-	// 验证策略的唯一性和注册状态。
-	for i, p := range c.Plugins.Policies {
-		if _, ok := seenPolicy[p]; ok {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeDuplicatePolicy,
-				fmt.Sprintf("%s[%d]", FieldPluginsPolicies, i),
-				p,
-				"policy must be unique",
-			))
-			continue
-		}
-		seenPolicy[p] = struct{}{}
-		if !registry.HasPolicy(p) {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeUnknownPolicy,
-				fmt.Sprintf("%s[%d]", FieldPluginsPolicies, i),
-				p,
-				"policy is not registered",
-			))
-		}
-	}
-
-	// 验证目标函数配置（如果启用）。
-	if c.Plugins.Objective.Enabled {
-		if c.Plugins.Objective.Name == "" {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidObjective,
-				FieldPluginsObjectiveName,
-				c.Plugins.Objective.Name,
-				"must not be empty when objective is enabled",
-			))
-		} else if !registry.HasObjective(c.Plugins.Objective.Name) {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidObjective,
-				FieldPluginsObjectiveName,
-				c.Plugins.Objective.Name,
-				"objective is not registered",
-			))
-		}
-		if c.Plugins.Objective.TimeoutMs < 1 || c.Plugins.Objective.TimeoutMs > 20 {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidObjectiveTimeout,
-				FieldPluginsObjectiveTimeout,
-				c.Plugins.Objective.TimeoutMs,
-				"must be between 1 and 20",
-			))
-		}
-	}
-
-	// 验证回退链配置。
-	if len(c.FallbackChain) == 0 {
-		errs = append(errs, lberrors.NewConfigError(
-			lberrors.CodeInvalidFallbackChain,
-			FieldFallbackChain,
-			c.FallbackChain,
-			"must not be empty",
-		))
-	}
-	seenFallback := make(map[string]struct{}, len(c.FallbackChain))
-	// 验证回退链中每个元素的有效性和唯一性。
-	for i, s := range c.FallbackChain {
-		if s == "" {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidFallbackChain,
-				fmt.Sprintf("%s[%d]", FieldFallbackChain, i),
-				s,
-				"must not be empty",
-			))
-			continue
-		}
-		if _, ok := seenFallback[s]; ok {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidFallbackChain,
-				fmt.Sprintf("%s[%d]", FieldFallbackChain, i),
-				s,
-				"must not contain duplicates",
-			))
-			continue
-		}
-		seenFallback[s] = struct{}{}
-		if s != FallbackPolicyRanked && !registry.HasAlgorithm(s) {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidFallbackChain,
-				fmt.Sprintf("%s[%d]", FieldFallbackChain, i),
-				s,
-				"must be policy_ranked or a registered algorithm",
-			))
-		}
-	}
-
-	// 验证每个路由类别的权重配置。
-	for _, rc := range c.RouteClasses {
-		weights, ok := c.Weights.ByRouteClass[rc]
-		if !ok {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidWeight,
-				fmt.Sprintf("%s.%s", FieldWeights, rc),
-				nil,
-				"weights must be configured for each route class",
-			))
-			continue
-		}
-		sum := 0
-		// 验证每个权重值的范围，并计算权重总和。
-		for metric, w := range weights {
-			if w < 0 || w > 10000 {
-				errs = append(errs, lberrors.NewConfigError(
-					lberrors.CodeInvalidWeight,
-					fmt.Sprintf("%s.%s.%s", FieldWeights, rc, metric),
-					w,
-					"must be between 0 and 10000",
-				))
-			}
-			sum += w
-		}
-		// 检查权重总和是否为 10000。
-		if sum != 10000 {
-			errs = append(errs, lberrors.NewConfigError(
-				lberrors.CodeInvalidWeightSum,
-				fmt.Sprintf("%s.%s", FieldWeights, rc),
-				sum,
-				"weight sum must equal 10000",
-			))
-		}
-
-		// 对于 LLM 路由类别，检查是否包含必需的权重项。
-		if rc == types.RouteLLMPrefill || rc == types.RouteLLMDecode {
-			for _, metric := range requiredLLMMetrics {
-				if _, ok := weights[metric]; !ok {
-					errs = append(errs, lberrors.NewConfigError(
-						lberrors.CodeMissingLLMWeights,
-						fmt.Sprintf("%s.%s.%s", FieldWeights, rc, metric),
-						nil,
-						"llm route classes must include ttft,tpot,kv_hit",
-					))
-				}
-			}
-		}
+	// 仅在启用 weighted_objective 时强制执行内置权重约束。
+	if c.Plugins.Objective.Enabled && c.Plugins.Objective.Name == ObjectiveWeighted {
+		errs = append(errs, validateWeightedObjectiveWeights(c)...)
 	}
 
 	// 如果有任何错误，返回合并的错误列表。
@@ -358,6 +254,152 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+func validateAlgorithmBindings(c *Config) []error {
+	seenRouteClass := make(map[types.RouteClass]struct{}, len(c.RouteClasses))
+	out := make([]error, 0)
+	for _, rc := range c.RouteClasses {
+		if !isValidRouteClass(rc) {
+			continue
+		}
+		if _, ok := seenRouteClass[rc]; ok {
+			continue
+		}
+		seenRouteClass[rc] = struct{}{}
+
+		name, ok := c.Plugins.Algorithms[rc]
+		if !ok || name == "" {
+			out = append(out, lberrors.NewConfigError(
+				lberrors.CodeMissingAlgorithmBinding,
+				fmt.Sprintf("%s.%s", FieldPluginsAlgorithms, rc),
+				name,
+				"must bind one algorithm per route class",
+			))
+			continue
+		}
+		if !registry.HasAlgorithm(name) {
+			out = append(out, lberrors.NewConfigError(
+				lberrors.CodeMissingAlgorithmBinding,
+				fmt.Sprintf("%s.%s", FieldPluginsAlgorithms, rc),
+				name,
+				"algorithm is not registered",
+			))
+		}
+	}
+	return out
+}
+
+func validatePolicyRegistrations(c *Config) []error {
+	seenPolicy := make(map[string]struct{}, len(c.Plugins.Policies))
+	out := make([]error, 0)
+	for i, p := range c.Plugins.Policies {
+		if p == "" {
+			continue
+		}
+		if _, ok := seenPolicy[p]; ok {
+			continue
+		}
+		seenPolicy[p] = struct{}{}
+		if !registry.HasPolicy(p) {
+			out = append(out, lberrors.NewConfigError(
+				lberrors.CodeUnknownPolicy,
+				fmt.Sprintf("%s[%d]", FieldPluginsPolicies, i),
+				p,
+				"policy is not registered",
+			))
+		}
+	}
+	return out
+}
+
+func validateObjectiveRegistration(c *Config) []error {
+	if !c.Plugins.Objective.Enabled || c.Plugins.Objective.Name == "" {
+		return nil
+	}
+	if registry.HasObjective(c.Plugins.Objective.Name) {
+		return nil
+	}
+	return []error{lberrors.NewConfigError(
+		lberrors.CodeInvalidObjective,
+		FieldPluginsObjectiveName,
+		c.Plugins.Objective.Name,
+		"objective is not registered",
+	)}
+}
+
+func validateFallbackRegistrations(c *Config) []error {
+	seenFallback := make(map[string]struct{}, len(c.FallbackChain))
+	out := make([]error, 0)
+	for i, s := range c.FallbackChain {
+		if s == "" {
+			continue
+		}
+		if _, ok := seenFallback[s]; ok {
+			continue
+		}
+		seenFallback[s] = struct{}{}
+		if s != FallbackPolicyRanked && !registry.HasAlgorithm(s) {
+			out = append(out, lberrors.NewConfigError(
+				lberrors.CodeInvalidFallbackChain,
+				fmt.Sprintf("%s[%d]", FieldFallbackChain, i),
+				s,
+				"must be policy_ranked or a registered algorithm",
+			))
+		}
+	}
+	return out
+}
+
+func validateWeightedObjectiveWeights(c *Config) []error {
+	out := make([]error, 0)
+	for _, rc := range c.RouteClasses {
+		weights, ok := c.Weights.ByRouteClass[rc]
+		if !ok {
+			out = append(out, lberrors.NewConfigError(
+				lberrors.CodeInvalidWeight,
+				fmt.Sprintf("%s.%s", FieldWeights, rc),
+				nil,
+				"weights must be configured for each route class",
+			))
+			continue
+		}
+
+		sum := 0
+		for metric, w := range weights {
+			if w < 0 || w > 10000 {
+				out = append(out, lberrors.NewConfigError(
+					lberrors.CodeInvalidWeight,
+					fmt.Sprintf("%s.%s.%s", FieldWeights, rc, metric),
+					w,
+					"must be between 0 and 10000",
+				))
+			}
+			sum += w
+		}
+		if sum != 10000 {
+			out = append(out, lberrors.NewConfigError(
+				lberrors.CodeInvalidWeightSum,
+				fmt.Sprintf("%s.%s", FieldWeights, rc),
+				sum,
+				"weight sum must equal 10000",
+			))
+		}
+
+		if rc == types.RouteLLMPrefill || rc == types.RouteLLMDecode {
+			for _, metric := range requiredLLMMetrics {
+				if _, ok := weights[metric]; !ok {
+					out = append(out, lberrors.NewConfigError(
+						lberrors.CodeMissingLLMWeights,
+						fmt.Sprintf("%s.%s.%s", FieldWeights, rc, metric),
+						nil,
+						"llm route classes must include ttft,tpot,kv_hit",
+					))
+				}
+			}
+		}
+	}
+	return out
+}
+
 // isValidRouteClass 判断路由类别是否为受支持的内置枚举值。
 func isValidRouteClass(routeClass types.RouteClass) bool {
 	switch routeClass {
@@ -365,6 +407,200 @@ func isValidRouteClass(routeClass types.RouteClass) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func validateBasicFields(c *Config) []error {
+	view := basicValidationView{
+		TopK:          c.TopK,
+		RouteClasses:  c.RouteClasses,
+		FallbackChain: c.FallbackChain,
+		Policies:      c.Plugins.Policies,
+	}
+	if c.Plugins.Objective.Enabled {
+		name := c.Plugins.Objective.Name
+		view.ObjectiveName = &name
+		timeout := c.Plugins.Objective.TimeoutMs
+		view.ObjectiveTimeout = &timeout
+		if c.Plugins.Objective.MaxConcurrent != 0 {
+			maxConc := c.Plugins.Objective.MaxConcurrent
+			view.ObjectiveMaxConc = &maxConc
+		}
+	}
+
+	err := cfgValidator.Struct(view)
+	if err == nil {
+		return nil
+	}
+
+	var validationErrs validator.ValidationErrors
+	if !errors.As(err, &validationErrs) {
+		return []error{lberrors.NewConfigError(
+			lberrors.CodeInvalidObjective,
+			"config.validation",
+			nil,
+			err.Error(),
+		)}
+	}
+
+	out := make([]error, 0, len(validationErrs))
+	for _, item := range validationErrs {
+		out = append(out, mapBasicValidationError(item, c))
+	}
+	return out
+}
+
+func mapBasicValidationError(fieldErr validator.FieldError, c *Config) error {
+	fieldName, fieldIndex := splitIndexedStructField(fieldErr.StructField())
+
+	if fieldName == "RouteClasses" {
+		switch fieldErr.Tag() {
+		case "unique":
+			dupIdx, dupValue := firstDuplicateRouteClass(c.RouteClasses)
+			field := FieldRouteClasses
+			if dupIdx >= 0 {
+				field = fmt.Sprintf("%s[%d]", FieldRouteClasses, dupIdx)
+			}
+			return lberrors.NewConfigError(
+				lberrors.CodeInvalidRouteClass,
+				field,
+				dupValue,
+				"must not contain duplicates",
+			)
+		case "oneof":
+			field := FieldRouteClasses
+			if fieldIndex >= 0 {
+				field = fmt.Sprintf("%s[%d]", FieldRouteClasses, fieldIndex)
+			}
+			return lberrors.NewConfigError(
+				lberrors.CodeInvalidRouteClass,
+				field,
+				fieldErr.Value(),
+				"must be one of generic,llm-prefill,llm-decode",
+			)
+		}
+	}
+
+	if fieldName == "FallbackChain" {
+		switch fieldErr.Tag() {
+		case "unique":
+			dupIdx, dupValue := firstDuplicateString(c.FallbackChain)
+			field := FieldFallbackChain
+			if dupIdx >= 0 {
+				field = fmt.Sprintf("%s[%d]", FieldFallbackChain, dupIdx)
+			}
+			return lberrors.NewConfigError(
+				lberrors.CodeInvalidFallbackChain,
+				field,
+				dupValue,
+				"must not contain duplicates",
+			)
+		case "required":
+			field := FieldFallbackChain
+			if fieldIndex >= 0 {
+				field = fmt.Sprintf("%s[%d]", FieldFallbackChain, fieldIndex)
+			}
+			return lberrors.NewConfigError(
+				lberrors.CodeInvalidFallbackChain,
+				field,
+				fieldErr.Value(),
+				"must not be empty",
+			)
+		}
+	}
+
+	if fieldName == "Policies" && fieldErr.Tag() == "unique" {
+		dupIdx, dupValue := firstDuplicateString(c.Plugins.Policies)
+		field := FieldPluginsPolicies
+		if dupIdx >= 0 {
+			field = fmt.Sprintf("%s[%d]", FieldPluginsPolicies, dupIdx)
+		}
+		return lberrors.NewConfigError(
+			lberrors.CodeDuplicatePolicy,
+			field,
+			dupValue,
+			"policy must be unique",
+		)
+	}
+	if fieldName == "Policies" && fieldErr.Tag() == "required" {
+		field := FieldPluginsPolicies
+		if fieldIndex >= 0 {
+			field = fmt.Sprintf("%s[%d]", FieldPluginsPolicies, fieldIndex)
+		}
+		return lberrors.NewConfigError(
+			lberrors.CodeUnknownPolicy,
+			field,
+			fieldErr.Value(),
+			"policy is not registered",
+		)
+	}
+
+	mapping, ok := basicValidationErrorMappings[fieldName]
+	if !ok {
+		return lberrors.NewConfigError(
+			defaultValidationCodeForField(fieldName),
+			fmt.Sprintf("config.validation.%s", fieldErr.StructField()),
+			fieldErr.Value(),
+			fieldErr.Error(),
+		)
+	}
+	return lberrors.NewConfigError(
+		mapping.code,
+		mapping.field,
+		mapping.value(c),
+		mapping.constraint,
+	)
+}
+
+func splitIndexedStructField(structField string) (string, int) {
+	parts := strings.SplitN(structField, "[", 2)
+	if len(parts) < 2 {
+		return structField, -1
+	}
+	idxPart := strings.TrimSuffix(parts[1], "]")
+	idx, err := strconv.Atoi(idxPart)
+	if err != nil {
+		return parts[0], -1
+	}
+	return parts[0], idx
+}
+
+func firstDuplicateString(values []string) (int, string) {
+	seen := make(map[string]struct{}, len(values))
+	for i, value := range values {
+		if _, ok := seen[value]; ok {
+			return i, value
+		}
+		seen[value] = struct{}{}
+	}
+	return -1, ""
+}
+
+func firstDuplicateRouteClass(values []types.RouteClass) (int, types.RouteClass) {
+	seen := make(map[types.RouteClass]struct{}, len(values))
+	for i, value := range values {
+		if _, ok := seen[value]; ok {
+			return i, value
+		}
+		seen[value] = struct{}{}
+	}
+	return -1, ""
+}
+
+func defaultValidationCodeForField(fieldName string) string {
+	switch fieldName {
+	case "TopK":
+		return lberrors.CodeInvalidTopK
+	case "RouteClasses":
+		return lberrors.CodeInvalidRouteClass
+	case "FallbackChain":
+		return lberrors.CodeInvalidFallbackChain
+	case "Policies":
+		return lberrors.CodeDuplicatePolicy
+	case "ObjectiveName", "ObjectiveTimeout", "ObjectiveMaxConc":
+		return lberrors.CodeInvalidObjective
+	default:
+		return lberrors.CodeInvalidObjective
 	}
 }
 
@@ -413,6 +649,13 @@ func WithObjective(name string, timeoutMs int, enabled bool) Option {
 	}
 }
 
+// WithObjectiveMaxConcurrent 设置 objective 的并发上限（仅在 objective 启用时生效）。
+func WithObjectiveMaxConcurrent(v int) Option {
+	return func(c *Config) {
+		c.Plugins.Objective.MaxConcurrent = v
+	}
+}
+
 // WithWeight 设置某路由类某指标权重。
 func WithWeight(routeClass types.RouteClass, metric string, w int) Option {
 	return func(c *Config) {
@@ -431,7 +674,14 @@ func WithWeightString(routeClass, metric string, w int) Option {
 	return WithWeight(types.RouteClass(routeClass), metric, w)
 }
 
-// WithTelemetrySink 设置 telemetry sink。
+// WithSnapshotTTLGuard 设置是否启用快照新鲜度 TTL 防护。
+func WithSnapshotTTLGuard(enabled bool) Option {
+	return func(c *Config) {
+		c.SnapshotTTLGuard = enabled
+	}
+}
+
+// WithTelemetrySink 设置路由遥测事件接收器。
 func WithTelemetrySink(s telemetry.Sink) Option {
 	return func(c *Config) {
 		c.TelemetrySink = s

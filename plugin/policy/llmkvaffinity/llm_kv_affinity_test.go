@@ -42,3 +42,28 @@ func TestReRankSkipNonLLM(t *testing.T) {
 	assert.Equal(t, "n1", out[0].Node.NodeID)
 	assert.Equal(t, "n2", out[1].Node.NodeID)
 }
+
+func TestReRankPreferRequestHintNodes(t *testing.T) {
+	plugin := Plugin{}
+	req := types.RequestContext{
+		RouteClass: types.RouteLLMPrefill,
+		Metadata: map[string]string{
+			MetadataPreferredNodesKey: "n3, n1",
+		},
+	}
+	candidates := []types.Candidate{
+		{Node: types.NodeSnapshot{NodeID: "n1", KVCacheHitRate: 0.2}},
+		{Node: types.NodeSnapshot{NodeID: "n2", KVCacheHitRate: 0.9}},
+		{Node: types.NodeSnapshot{NodeID: "n3", KVCacheHitRate: 0.1}},
+	}
+
+	out, err := plugin.ReRank(req, candidates)
+	require.NoError(t, err)
+	require.Len(t, out, 3)
+	assert.Equal(t, "n1", out[0].Node.NodeID)
+	assert.Equal(t, "n3", out[1].Node.NodeID)
+	assert.Equal(t, "n2", out[2].Node.NodeID)
+	assert.Contains(t, out[0].Reason, reasonHinted)
+	assert.Contains(t, out[1].Reason, reasonHinted)
+	assert.NotContains(t, out[2].Reason, reasonHinted)
+}

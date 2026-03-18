@@ -18,14 +18,15 @@ const (
 
 // TelemetryEvent 表示一次观测事件。
 type TelemetryEvent struct {
-	Type       EventType
-	RouteClass string
-	Stage      string
-	Outcome    string
-	Reason     string
-	Plugin     string
-	DurationMs int64
-	Timestamp  time.Time
+	Type                 EventType
+	RouteClass           string
+	Stage                string
+	Outcome              string
+	Reason               string
+	Plugin               string
+	DurationMs           int64
+	Timestamp            time.Time
+	ObjectiveCancellable bool
 }
 
 // Sink 是观测事件消费接口。
