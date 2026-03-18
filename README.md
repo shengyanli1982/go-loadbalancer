@@ -16,7 +16,6 @@ Start with a default config and built-in plugins. Then evolve toward advanced LL
 ## Responsibility Boundary
 
 This is an SDK routing decision library, and upstream probing should be implemented by external systems, which then update each node's state.
-这是 SDK 路由决策库，upstream 探测由外部系统负责。
 
 ## Why Teams Choose A2X
 
@@ -125,15 +124,15 @@ Objective guard benchmark environment (measured on 2026-03-18):
 
 Objective guard benchmark results:
 
-| Benchmark                                                                  | ns/op  | req/s | p95 (ms) | p99 (ms) | B/op | allocs/op |
-| -------------------------------------------------------------------------- | -----: | ----: | -------: | -------: | ---: | --------: |
-| `BenchmarkRoute/serial_nodes_256`                                          |   2180 |    N/A |      N/A |      N/A | 1392 |         3 |
-| `BenchmarkRoute/serial_default_config_nodes_256`                           |   3979 |    N/A |      N/A |      N/A | 5248 |        16 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`                        |   5123 |    N/A |      N/A |      N/A | 2680 |        16 |
-| `BenchmarkRoute/parallel_objective_guard_max_concurrent_1_nodes_256`       | 616182 |    N/A |      N/A |      N/A | 2649 |        16 |
-| `BenchmarkRoute/parallel_objective_guard_max_concurrent_64_nodes_256`      |  52409 |    N/A |      N/A |      N/A | 2648 |        16 |
-| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_1_nodes_256`           | 630585 |   1585 |    9.471 |    11.56 | 2649 |        16 |
-| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_64_nodes_256`          |  52822 |  18926 |    1.001 |    1.259 | 2648 |        16 |
+| Benchmark                                                             |  ns/op | req/s | p95 (ms) | p99 (ms) | B/op | allocs/op |
+| --------------------------------------------------------------------- | -----: | ----: | -------: | -------: | ---: | --------: |
+| `BenchmarkRoute/serial_nodes_256`                                     |   2180 |   N/A |      N/A |      N/A | 1392 |         3 |
+| `BenchmarkRoute/serial_default_config_nodes_256`                      |   3979 |   N/A |      N/A |      N/A | 5248 |        16 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`                   |   5123 |   N/A |      N/A |      N/A | 2680 |        16 |
+| `BenchmarkRoute/parallel_objective_guard_max_concurrent_1_nodes_256`  | 616182 |   N/A |      N/A |      N/A | 2649 |        16 |
+| `BenchmarkRoute/parallel_objective_guard_max_concurrent_64_nodes_256` |  52409 |   N/A |      N/A |      N/A | 2648 |        16 |
+| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_1_nodes_256`      | 630585 |  1585 |    9.471 |    11.56 | 2649 |        16 |
+| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_64_nodes_256`     |  52822 | 18926 |    1.001 |    1.259 | 2648 |        16 |
 
 Observed deltas from this run:
 
