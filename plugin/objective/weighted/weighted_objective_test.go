@@ -11,7 +11,7 @@ import (
 
 // TestChooseCandidate 验证加权目标函数会选择更优候选。
 func TestChooseCandidate(t *testing.T) {
-	plugin := Plugin{}
+	plugin := &Plugin{}
 	candidates := []types.Candidate{
 		{Node: types.NodeSnapshot{NodeID: "n1", QueueDepth: 10, P95LatencyMs: 20, ErrorRate: 0.05}},
 		{Node: types.NodeSnapshot{NodeID: "n2", QueueDepth: 1, P95LatencyMs: 10, ErrorRate: 0.01}},

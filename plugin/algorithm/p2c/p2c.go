@@ -120,12 +120,4 @@ func nodeScorePtr(node *types.NodeSnapshot) float64 {
 	return float64(node.Inflight*10000+node.QueueDepth*100) + node.P95LatencyMs + node.ErrorRate*1000
 }
 
-// min 返回两个整数中的较小值。
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 var _ algorithm.Plugin = Plugin{}

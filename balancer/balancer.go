@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/shengyanli1982/go-loadbalancer/config"
@@ -31,6 +32,8 @@ const (
 	reasonFallbackPolicyRanked   = "fallback=policy_ranked"
 	reasonFallbackPrefix         = "fallback="
 	reasonCauseFormat            = "cause=%v"
+
+	defaultObjectiveMaxConcurrent = 128
 )
 
 // Balancer 定义 A2X 路由主接口。
@@ -46,7 +49,9 @@ type a2xBalancer struct {
 	sink               telemetry.Sink // 遥测数据收集器
 	routeAlgorithms    map[types.RouteClass]algorithmplugin.Plugin
 	policies           []policyplugin.Plugin
+	hardPolicies       []policyplugin.Plugin
 	objectivePlugin    objectiveplugin.Plugin
+	objectiveLimiter   chan struct{}
 	fallbackAlgorithms map[string]algorithmplugin.Plugin
 	telemetryEnabled   bool
 }
@@ -69,29 +74,86 @@ func New(cfg config.Config, opts ...config.Option) (Balancer, error) {
 
 	routeAlgorithms := make(map[types.RouteClass]algorithmplugin.Plugin, len(local.Plugins.Algorithms))
 	for routeClass, algorithmName := range local.Plugins.Algorithms {
-		plugin, ok := reg.GetAlgorithm(algorithmName)
-		if !ok || plugin == nil {
+		if ctor, ok := reg.GetAlgorithmFactory(algorithmName); ok {
+			plugin, err := instantiateAlgorithmFromFactory(algorithmName, ctor)
+			if err != nil {
+				return nil, err
+			}
+			routeAlgorithms[routeClass] = plugin
+			continue
+		}
+		prototype, ok := reg.GetAlgorithm(algorithmName)
+		if !ok || prototype == nil {
 			return nil, fmt.Errorf("algorithm=%s: %w", algorithmName, lberrors.ErrUnknownPlugin)
+		}
+		plugin, err := instantiateAlgorithmPlugin(prototype)
+		if err != nil {
+			return nil, fmt.Errorf("algorithm=%s: %w", algorithmName, err)
 		}
 		routeAlgorithms[routeClass] = plugin
 	}
 
 	policies := make([]policyplugin.Plugin, 0, len(local.Plugins.Policies))
+	hardPolicies := make([]policyplugin.Plugin, 0, len(local.Plugins.Policies))
 	for _, policyName := range local.Plugins.Policies {
-		plugin, ok := reg.GetPolicy(policyName)
-		if !ok || plugin == nil {
+		if ctor, ok := reg.GetPolicyFactory(policyName); ok {
+			plugin, err := instantiatePolicyFromFactory(policyName, ctor)
+			if err != nil {
+				return nil, err
+			}
+			policies = append(policies, plugin)
+			if isHardConstraintPolicy(plugin) {
+				hardPolicies = append(hardPolicies, plugin)
+			}
+			continue
+		}
+		prototype, ok := reg.GetPolicy(policyName)
+		if !ok || prototype == nil {
 			return nil, fmt.Errorf("policy=%s: %w", policyName, lberrors.ErrUnknownPlugin)
 		}
+		plugin, err := instantiatePolicyPlugin(prototype)
+		if err != nil {
+			return nil, fmt.Errorf("policy=%s: %w", policyName, err)
+		}
 		policies = append(policies, plugin)
+		if isHardConstraintPolicy(plugin) {
+			hardPolicies = append(hardPolicies, plugin)
+		}
 	}
 
 	var objectivePlugin objectiveplugin.Plugin
+	var objectiveLimiter chan struct{}
 	if local.Plugins.Objective.Enabled {
-		plugin, ok := reg.GetObjective(local.Plugins.Objective.Name)
-		if !ok || plugin == nil {
-			return nil, fmt.Errorf("objective=%s: %w", local.Plugins.Objective.Name, lberrors.ErrUnknownPlugin)
+		if ctor, ok := reg.GetObjectiveFactory(local.Plugins.Objective.Name); ok {
+			plugin, err := instantiateObjectiveFromFactory(local.Plugins.Objective.Name, ctor)
+			if err != nil {
+				return nil, err
+			}
+			if configurable, ok := plugin.(objectiveplugin.RouteWeightsAware); ok {
+				configurable.SetRouteWeights(local.Weights.ByRouteClass)
+			}
+			objectivePlugin = plugin
+		} else {
+			prototype, ok := reg.GetObjective(local.Plugins.Objective.Name)
+			if !ok || prototype == nil {
+				return nil, fmt.Errorf("objective=%s: %w", local.Plugins.Objective.Name, lberrors.ErrUnknownPlugin)
+			}
+			plugin, err := instantiateObjectivePlugin(prototype)
+			if err != nil {
+				return nil, fmt.Errorf("objective=%s: %w", local.Plugins.Objective.Name, err)
+			}
+			if configurable, ok := plugin.(objectiveplugin.RouteWeightsAware); ok {
+				configurable.SetRouteWeights(local.Weights.ByRouteClass)
+			}
+			objectivePlugin = plugin
 		}
-		objectivePlugin = plugin
+		maxConcurrent := local.Plugins.Objective.MaxConcurrent
+		if maxConcurrent == 0 {
+			maxConcurrent = defaultObjectiveMaxConcurrent
+		}
+		if maxConcurrent > 0 {
+			objectiveLimiter = make(chan struct{}, maxConcurrent)
+		}
 	}
 
 	fallbackAlgorithms := make(map[string]algorithmplugin.Plugin, len(local.FallbackChain))
@@ -102,9 +164,21 @@ func New(cfg config.Config, opts ...config.Option) (Balancer, error) {
 		if _, exists := fallbackAlgorithms[step]; exists {
 			continue
 		}
-		plugin, ok := reg.GetAlgorithm(step)
-		if !ok || plugin == nil {
+		if ctor, ok := reg.GetAlgorithmFactory(step); ok {
+			plugin, err := instantiateAlgorithmFromFactory(step, ctor)
+			if err != nil {
+				return nil, err
+			}
+			fallbackAlgorithms[step] = plugin
+			continue
+		}
+		prototype, ok := reg.GetAlgorithm(step)
+		if !ok || prototype == nil {
 			return nil, fmt.Errorf("fallback=%s: %w", step, lberrors.ErrUnknownPlugin)
+		}
+		plugin, err := instantiateAlgorithmPlugin(prototype)
+		if err != nil {
+			return nil, fmt.Errorf("fallback=%s: %w", step, err)
 		}
 		fallbackAlgorithms[step] = plugin
 	}
@@ -120,7 +194,9 @@ func New(cfg config.Config, opts ...config.Option) (Balancer, error) {
 		sink:               local.TelemetrySink,
 		routeAlgorithms:    routeAlgorithms,
 		policies:           policies,
+		hardPolicies:       hardPolicies,
 		objectivePlugin:    objectivePlugin,
+		objectiveLimiter:   objectiveLimiter,
 		fallbackAlgorithms: fallbackAlgorithms,
 		telemetryEnabled:   telemetryEnabled,
 	}, nil
@@ -140,7 +216,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 
 	// 第一步：先做硬约束过滤（健康状态、模型可用性）。
 	// 过滤出健康且支持目标模型的节点。
-	filtered, filterErr := filterNodes(req, nodes)
+	filtered, filterErr := filterNodes(req, nodes, b.cfg.SnapshotTTLGuard)
 	if filterErr != nil {
 		if b.telemetryEnabled {
 			b.emit(telemetry.TelemetryEvent{
@@ -188,6 +264,9 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 			if baseErr == nil {
 				baseErr = lberrors.ErrNoCandidate
 			}
+			if isHardConstraintPolicy(policyPlugin) {
+				return types.Candidate{}, baseErr
+			}
 			candidate, fbErr := b.fallback(ctx, req, filtered, ranked, baseErr)
 			if fbErr != nil {
 				return types.Candidate{}, errors.Join(baseErr, fbErr)
@@ -205,15 +284,28 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 			candidate.Reason = append(candidate.Reason, reasonSelectedByObjective)
 			if b.telemetryEnabled {
 				b.emit(telemetry.TelemetryEvent{
-					Type:       telemetry.EventObjectiveResult,
-					RouteClass: string(req.RouteClass),
-					Stage:      stageObjective,
-					Outcome:    outcomeSuccess,
-					Plugin:     b.cfg.Plugins.Objective.Name,
-					DurationMs: sinceMs(started),
+					Type:                 telemetry.EventObjectiveResult,
+					RouteClass:           string(req.RouteClass),
+					Stage:                stageObjective,
+					Outcome:              outcomeSuccess,
+					Plugin:               b.cfg.Plugins.Objective.Name,
+					ObjectiveCancellable: isObjectiveCancellable(b.objectivePlugin),
+					DurationMs:           sinceMs(started),
 				})
 			}
 			return candidate, nil
+		}
+		if b.telemetryEnabled {
+			b.emit(telemetry.TelemetryEvent{
+				Type:                 telemetry.EventObjectiveResult,
+				RouteClass:           string(req.RouteClass),
+				Stage:                stageObjective,
+				Outcome:              outcomeFailed,
+				Reason:               objectiveErr.Error(),
+				Plugin:               b.cfg.Plugins.Objective.Name,
+				ObjectiveCancellable: isObjectiveCancellable(b.objectivePlugin),
+				DurationMs:           sinceMs(started),
+			})
 		}
 		candidate, fbErr := b.fallback(ctx, req, filtered, ranked, objectiveErr)
 		if fbErr != nil {
@@ -244,7 +336,25 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 	if plugin == nil {
 		return types.Candidate{}, fmt.Errorf("objective=%s: %w", objectiveName, lberrors.ErrUnknownPlugin)
 	}
-	timeout := time.Duration(b.cfg.Plugins.Objective.TimeoutMs) * time.Millisecond
+	timeout := b.objectiveTimeout(req)
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	release, acquireErr := b.acquireObjectiveSlot(timeoutCtx, objectiveName, timeout)
+	if acquireErr != nil {
+		return types.Candidate{}, acquireErr
+	}
+	defer release()
+
+	if ctxPlugin, ok := plugin.(objectiveplugin.ContextPlugin); ok {
+		candidate, err := safeChooseWithContext(ctxPlugin, timeoutCtx, req, candidates, objectiveName)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				return types.Candidate{}, fmt.Errorf("objective=%s timeout=%s: %w", objectiveName, timeout, lberrors.ErrPluginTimeout)
+			}
+			return types.Candidate{}, err
+		}
+		return candidate, nil
+	}
 
 	type result struct {
 		candidate types.Candidate
@@ -254,10 +364,11 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 	// Objective 在 goroutine 内执行，避免阻塞 Route 热路径。
 	// 使用 goroutine 并发执行目标函数，防止长时间阻塞主路由流程。
 	go func() {
-		candidate, err := plugin.Choose(req, candidates)
+		candidate, err := safeChoose(plugin, req, candidates, objectiveName)
 		resCh <- result{candidate: candidate, err: err}
 	}()
-	timer := time.NewTimer(timeout)
+	deadline, _ := timeoutCtx.Deadline()
+	timer := time.NewTimer(time.Until(deadline))
 	defer func() {
 		if !timer.Stop() {
 			select {
@@ -268,8 +379,11 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 	}()
 
 	select {
-	case <-ctx.Done():
-		return types.Candidate{}, ctx.Err()
+	case <-timeoutCtx.Done():
+		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
+			return types.Candidate{}, fmt.Errorf("objective=%s timeout=%s: %w", objectiveName, timeout, lberrors.ErrPluginTimeout)
+		}
+		return types.Candidate{}, timeoutCtx.Err()
 	// 超时视为插件失败，交给上层 fallback 处理。
 	// 如果目标函数执行超时，则认为插件失败，触发回退机制。
 	case <-timer.C:
@@ -294,6 +408,13 @@ func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, fi
 				continue
 			}
 			candidate := ranked[0]
+			candidate, allowed, hardErr := b.enforceHardPolicies(req, candidate)
+			if hardErr != nil {
+				return types.Candidate{}, hardErr
+			}
+			if !allowed {
+				continue
+			}
 			candidate.Reason = append(candidate.Reason, reasonFallbackPolicyRanked, fmt.Sprintf(reasonCauseFormat, cause))
 			if b.telemetryEnabled {
 				b.emit(telemetry.TelemetryEvent{
@@ -311,23 +432,39 @@ func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, fi
 			if !ok {
 				continue
 			}
-			candidates, err := plugin.SelectCandidates(req, filtered, 1)
+			topK := b.cfg.TopK
+			if topK < 1 {
+				topK = 1
+			}
+			if topK > len(filtered) {
+				topK = len(filtered)
+			}
+			candidates, err := plugin.SelectCandidates(req, filtered, topK)
 			if err != nil || len(candidates) == 0 {
 				continue
 			}
-			candidate := candidates[0]
-			candidate.Reason = append(candidate.Reason, reasonFallbackPrefix+step, fmt.Sprintf(reasonCauseFormat, cause))
-			if b.telemetryEnabled {
-				b.emit(telemetry.TelemetryEvent{
-					Type:       telemetry.EventRouteFallback,
-					RouteClass: string(req.RouteClass),
-					Stage:      stageFallback,
-					Outcome:    outcomeSuccess,
-					Reason:     candidate.Node.NodeID,
-					Plugin:     step,
-				})
+
+			for _, candidate := range candidates {
+				candidate, allowed, hardErr := b.enforceHardPolicies(req, candidate)
+				if hardErr != nil {
+					return types.Candidate{}, hardErr
+				}
+				if !allowed {
+					continue
+				}
+				candidate.Reason = append(candidate.Reason, reasonFallbackPrefix+step, fmt.Sprintf(reasonCauseFormat, cause))
+				if b.telemetryEnabled {
+					b.emit(telemetry.TelemetryEvent{
+						Type:       telemetry.EventRouteFallback,
+						RouteClass: string(req.RouteClass),
+						Stage:      stageFallback,
+						Outcome:    outcomeSuccess,
+						Reason:     candidate.Node.NodeID,
+						Plugin:     step,
+					})
+				}
+				return candidate, nil
 			}
-			return candidate, nil
 		}
 	}
 	return types.Candidate{}, errors.Join(cause, lberrors.ErrNoCandidate)
@@ -340,17 +477,20 @@ func (b *a2xBalancer) emit(e telemetry.TelemetryEvent) {
 }
 
 // filterNodes 按健康状态与模型可用性执行硬约束过滤。
-func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.NodeSnapshot, error) {
+func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot, enforceSnapshotTTL bool) ([]types.NodeSnapshot, error) {
 	if len(nodes) == 0 {
 		return nil, lberrors.ErrNoHealthyNodes
 	}
+
 	model := req.Model
 	healthyCount := 0
 	matchedCount := 0
-	// 第一轮仅统计，命中“全部通过”时直接复用原切片，避免热路径复制。
 	for i := range nodes {
 		n := &nodes[i]
 		if !n.Healthy {
+			continue
+		}
+		if enforceSnapshotTTL && n.FreshnessTTLms <= 0 {
 			continue
 		}
 		healthyCount++
@@ -359,10 +499,10 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.
 		}
 		matchedCount++
 	}
+
 	if healthyCount == 0 {
 		return nil, lberrors.ErrNoHealthyNodes
 	}
-	// 如果有健康节点但都不支持目标模型，返回模型不可用错误。
 	if matchedCount == 0 {
 		return nil, lberrors.ErrNoModelAvailable
 	}
@@ -374,6 +514,9 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.
 	for i := range nodes {
 		n := &nodes[i]
 		if !n.Healthy {
+			continue
+		}
+		if enforceSnapshotTTL && n.FreshnessTTLms <= 0 {
 			continue
 		}
 		if model != "" && !nodeSupportsModel(n, model) {
@@ -392,6 +535,182 @@ func nodeSupportsModel(n *types.NodeSnapshot, model string) bool {
 		return true
 	}
 	return n.ModelAvailability[model]
+}
+
+func (b *a2xBalancer) enforceHardPolicies(req types.RequestContext, candidate types.Candidate) (types.Candidate, bool, error) {
+	if len(b.hardPolicies) == 0 {
+		return candidate, true, nil
+	}
+
+	ranked := []types.Candidate{candidate}
+	for _, policyPlugin := range b.hardPolicies {
+		nextRanked, err := policyPlugin.ReRank(req, ranked)
+		if err != nil {
+			return types.Candidate{}, false, err
+		}
+		if len(nextRanked) == 0 {
+			return types.Candidate{}, false, nil
+		}
+		ranked = nextRanked
+	}
+	return ranked[0], true, nil
+}
+
+func safeChoose(plugin objectiveplugin.Plugin, req types.RequestContext, candidates []types.Candidate, objectiveName string) (candidate types.Candidate, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("objective=%s panic=%v: %w", objectiveName, recovered, lberrors.ErrPluginMisconfigured)
+		}
+	}()
+	return plugin.Choose(req, candidates)
+}
+
+func safeChooseWithContext(plugin objectiveplugin.ContextPlugin, ctx context.Context, req types.RequestContext, candidates []types.Candidate, objectiveName string) (candidate types.Candidate, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("objective=%s panic=%v: %w", objectiveName, recovered, lberrors.ErrPluginMisconfigured)
+		}
+	}()
+	return plugin.ChooseWithContext(ctx, req, candidates)
+}
+
+func (b *a2xBalancer) objectiveTimeout(req types.RequestContext) time.Duration {
+	base := time.Duration(b.cfg.Plugins.Objective.TimeoutMs) * time.Millisecond
+	totalTokens := req.PromptTokens + req.ExpectedTokens
+	switch req.RouteClass {
+	case types.RouteLLMPrefill:
+		switch {
+		case totalTokens >= 8192:
+			return base * 3
+		case totalTokens >= 2048:
+			return base * 2
+		}
+	case types.RouteLLMDecode:
+		if req.ExpectedTokens >= 2048 {
+			return base * 2
+		}
+	}
+	return base
+}
+
+func (b *a2xBalancer) acquireObjectiveSlot(ctx context.Context, objectiveName string, timeout time.Duration) (func(), error) {
+	if cap(b.objectiveLimiter) == 0 {
+		return func() {}, nil
+	}
+
+	select {
+	case b.objectiveLimiter <- struct{}{}:
+		return func() {
+			<-b.objectiveLimiter
+		}, nil
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+			return nil, fmt.Errorf("objective=%s timeout=%s max_concurrent=%d: %w", objectiveName, timeout, cap(b.objectiveLimiter), lberrors.ErrPluginTimeout)
+		}
+		return nil, ctx.Err()
+	}
+}
+
+func instantiateAlgorithmPlugin(prototype algorithmplugin.Plugin) (algorithmplugin.Plugin, error) {
+	instance, err := instantiatePluginInstance(prototype)
+	if err != nil {
+		return nil, err
+	}
+	plugin, ok := instance.(algorithmplugin.Plugin)
+	if !ok {
+		return nil, fmt.Errorf("algorithm plugin=%T: %w", prototype, lberrors.ErrPluginMisconfigured)
+	}
+	return plugin, nil
+}
+
+func instantiateAlgorithmFromFactory(name string, ctor func() algorithmplugin.Plugin) (algorithmplugin.Plugin, error) {
+	if ctor == nil {
+		return nil, fmt.Errorf("algorithm=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	plugin := ctor()
+	if plugin == nil {
+		return nil, fmt.Errorf("algorithm=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	if plugin.Name() == "" {
+		return nil, fmt.Errorf("algorithm=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	return plugin, nil
+}
+
+func instantiatePolicyPlugin(prototype policyplugin.Plugin) (policyplugin.Plugin, error) {
+	instance, err := instantiatePluginInstance(prototype)
+	if err != nil {
+		return nil, err
+	}
+	plugin, ok := instance.(policyplugin.Plugin)
+	if !ok {
+		return nil, fmt.Errorf("policy plugin=%T: %w", prototype, lberrors.ErrPluginMisconfigured)
+	}
+	return plugin, nil
+}
+
+func instantiatePolicyFromFactory(name string, ctor func() policyplugin.Plugin) (policyplugin.Plugin, error) {
+	if ctor == nil {
+		return nil, fmt.Errorf("policy=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	plugin := ctor()
+	if plugin == nil {
+		return nil, fmt.Errorf("policy=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	if plugin.Name() == "" {
+		return nil, fmt.Errorf("policy=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	return plugin, nil
+}
+
+func instantiateObjectivePlugin(prototype objectiveplugin.Plugin) (objectiveplugin.Plugin, error) {
+	instance, err := instantiatePluginInstance(prototype)
+	if err != nil {
+		return nil, err
+	}
+	plugin, ok := instance.(objectiveplugin.Plugin)
+	if !ok {
+		return nil, fmt.Errorf("objective plugin=%T: %w", prototype, lberrors.ErrPluginMisconfigured)
+	}
+	return plugin, nil
+}
+
+func instantiateObjectiveFromFactory(name string, ctor func() objectiveplugin.Plugin) (objectiveplugin.Plugin, error) {
+	if ctor == nil {
+		return nil, fmt.Errorf("objective=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	plugin := ctor()
+	if plugin == nil {
+		return nil, fmt.Errorf("objective=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	if plugin.Name() == "" {
+		return nil, fmt.Errorf("objective=%s: %w", name, lberrors.ErrPluginMisconfigured)
+	}
+	return plugin, nil
+}
+
+func instantiatePluginInstance(prototype any) (any, error) {
+	if prototype == nil {
+		return nil, fmt.Errorf("plugin=nil: %w", lberrors.ErrPluginMisconfigured)
+	}
+	typ := reflect.TypeOf(prototype)
+	if typ.Kind() == reflect.Ptr {
+		return reflect.New(typ.Elem()).Interface(), nil
+	}
+	return reflect.New(typ).Elem().Interface(), nil
+}
+
+func isHardConstraintPolicy(plugin policyplugin.Plugin) bool {
+	hard, ok := plugin.(policyplugin.HardConstraintPlugin)
+	return ok && hard.IsHardConstraint()
+}
+
+func isObjectiveCancellable(plugin objectiveplugin.Plugin) bool {
+	if plugin == nil {
+		return false
+	}
+	_, ok := plugin.(objectiveplugin.ContextPlugin)
+	return ok
 }
 
 // sinceMs 返回从 started 到当前时刻的毫秒耗时。

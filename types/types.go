@@ -32,6 +32,7 @@ type NodeSnapshot struct {
 	NodeID            string              // 节点唯一标识
 	Region            string              // 节点所在地域
 	Healthy           bool                // 节点是否健康
+	FreshnessTTLms    int64               // 状态新鲜度 TTL（毫秒），过期后可能被丢弃
 	StaticWeight      int                 // 节点静态权重（用于 RR/WRR，<=0 按 1 处理）
 	Inflight          int                 // 当前处理中的请求数
 	QueueDepth        int                 // 请求队列深度

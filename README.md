@@ -13,6 +13,11 @@
 
 Start with a default config and built-in plugins. Then evolve toward advanced LLM-aware policies without changing your core mental model.
 
+## Responsibility Boundary
+
+This is an SDK routing decision library, and upstream probing should be implemented by external systems, which then update each node's state.
+这是 SDK 路由决策库，upstream 探测由外部系统负责。
+
 ## Why Teams Choose A2X
 
 - **One core, multiple traffic classes**: `generic`, `llm-prefill`, `llm-decode`.
@@ -105,6 +110,36 @@ go test -run ^$ -bench BenchmarkSelectCandidates -benchmem ./plugin/algorithm/rr
 ```
 
 Numbers are from a single local run and should be used as a baseline reference. Re-run on your target hardware for production capacity planning.
+
+Objective guard benchmark command:
+
+```bash
+go test -run ^$ -bench "BenchmarkRoute/(serial_nodes_256|serial_default_config_nodes_256|serial_objective_enabled_nodes_256|parallel_objective_guard_max_concurrent_1_nodes_256|parallel_objective_guard_max_concurrent_64_nodes_256)$|BenchmarkRouteObjectiveGuardLatency/(max_concurrent_1_nodes_256|max_concurrent_64_nodes_256)$" -benchmem -benchtime=2s -count=1 ./balancer
+```
+
+Objective guard benchmark environment (measured on 2026-03-18):
+
+- Go `1.24.13`
+- OS/Arch: `windows/amd64`
+- CPU: `Intel(R) Core(TM) 5 210H`
+
+Objective guard benchmark results:
+
+| Benchmark                                                                  | ns/op  | req/s | p95 (ms) | p99 (ms) | B/op | allocs/op |
+| -------------------------------------------------------------------------- | -----: | ----: | -------: | -------: | ---: | --------: |
+| `BenchmarkRoute/serial_nodes_256`                                          |   2180 |    N/A |      N/A |      N/A | 1392 |         3 |
+| `BenchmarkRoute/serial_default_config_nodes_256`                           |   3979 |    N/A |      N/A |      N/A | 5248 |        16 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`                        |   5123 |    N/A |      N/A |      N/A | 2680 |        16 |
+| `BenchmarkRoute/parallel_objective_guard_max_concurrent_1_nodes_256`       | 616182 |    N/A |      N/A |      N/A | 2649 |        16 |
+| `BenchmarkRoute/parallel_objective_guard_max_concurrent_64_nodes_256`      |  52409 |    N/A |      N/A |      N/A | 2648 |        16 |
+| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_1_nodes_256`           | 630585 |   1585 |    9.471 |    11.56 | 2649 |        16 |
+| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_64_nodes_256`          |  52822 |  18926 |    1.001 |    1.259 | 2648 |        16 |
+
+Observed deltas from this run:
+
+- objective enabled (serial): `5123 ns/op` vs `3979 ns/op` (default config), +28.7% hot-path cost in this synthetic setup.
+- parallel throughput (guard 64 vs guard 1): `18926 req/s` vs `1585 req/s`, about `11.9x` improvement.
+- tail latency (guard 64 vs guard 1): p95 `1.001 ms` vs `9.471 ms`, about `89.4%` lower; p99 `1.259 ms` vs `11.56 ms`, about `89.1%` lower.
 
 ## Quick Start
 
@@ -223,16 +258,46 @@ Frequently used options:
 - `WithAlgorithm(routeClass, pluginName string)`
 - `WithPolicies(names ...string)`
 - `WithObjective(name string, timeoutMs int, enabled bool)`
+- `WithObjectiveMaxConcurrent(v int)`
 - `WithWeight(routeClass, metric string, w int)`
+- `WithSnapshotTTLGuard(enabled bool)`
 - `WithTelemetrySink(s telemetry.Sink)`
+
+Default policy chain (LLM-aware by default):
+
+- `health_gate -> tenant_quota -> llm_token_aware_queue -> llm_stage_aware -> llm_kv_affinity`
+
+Objective guard tuning notes:
+
+- `timeoutMs` valid range: `1..200`.
+- `maxConcurrent` valid range when set: `1..2048`; default is `128`.
+- Prefill/decode requests apply stage-aware timeout scaling based on token size before objective execution.
+
+Request-level KV affinity hint:
+
+- metadata key: `llm_kv_affinity_preferred_nodes`
+- value format: node id list split by comma / semicolon / whitespace, e.g. `node-a,node-b`
+- effect: hinted nodes are prioritized before global `KVCacheHitRate` sorting for `llm-prefill` and `llm-decode`.
+
+Snapshot freshness contract:
+
+- `types.NodeSnapshot.FreshnessTTLms > 0`: snapshot is fresh and eligible for routing.
+- `types.NodeSnapshot.FreshnessTTLms <= 0`: snapshot is stale and can be filtered when `WithSnapshotTTLGuard(true)` is enabled.
 
 Validation includes:
 
+- static schema checks powered by `validator/v10` (pinned to `v10.27.0`)
+- validator checks are used on config boundaries, not on the `Route` hot path
 - route class legality and algorithm binding completeness
 - fallback chain legality
 - BPS weight bounds and per-route-class weight sum
 - required LLM metrics (`ttft`, `tpot`, `kv_hit`)
 - aggregated multi-error return via `errors.Join`
+
+Optional input boundary checks:
+
+- `types.RequestContext.Validate()`
+- `types.NodeSnapshot.Validate()`
 
 ## API Reference
 
