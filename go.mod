@@ -1,6 +1,6 @@
 module github.com/shengyanli1982/go-loadbalancer
 
-go 1.21
+go 1.22
 
 require (
 	github.com/go-playground/validator/v10 v10.27.0
