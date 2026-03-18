@@ -7,6 +7,7 @@
 ![Architecture](https://img.shields.io/badge/Architecture-A2X-2E86DE)
 ![Tests](https://img.shields.io/badge/Tests-16%20passing-success)
 ![Race Support](https://img.shields.io/badge/Race%20Test-Windows%20Friendly-brightgreen)
+[![Go Reference](https://pkg.go.dev/badge/github.com/shengyanli1982/go-loadbalancer.svg)](https://pkg.go.dev/github.com/shengyanli1982/go-loadbalancer)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/shengyanli1982/go-loadbalancer)
 
 `go-loadbalancer` is a production-oriented routing library for teams that need stable load balancing today and safe strategy evolution tomorrow.
