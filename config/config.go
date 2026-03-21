@@ -27,7 +27,9 @@ const (
 	// 内置策略插件名。
 	PolicyHealthGate         = "health_gate"
 	PolicyTenantQuota        = "tenant_quota"
+	PolicyLLMBudgetGate      = "llm_budget_gate"
 	PolicyLLMKVAffinity      = "llm_kv_affinity"
+	PolicyLLMSessionAffinity = "llm_session_affinity"
 	PolicyLLMStageAware      = "llm_stage_aware"
 	PolicyLLMTokenAwareQueue = "llm_token_aware_queue"
 
@@ -51,6 +53,8 @@ const (
 	FieldPluginsObjectiveTimeout = "plugins.objective.timeout_ms"
 	FieldPluginsObjectiveMaxConc = "plugins.objective.max_concurrent"
 	FieldFallbackChain           = "fallback_chain"
+	FieldInputGuard              = "input_guard"
+	FieldReliabilityPilot        = "reliability_pilot"
 	FieldWeights                 = "weights"
 )
 
@@ -165,6 +169,9 @@ type Config struct {
 	RouteClasses     []types.RouteClass
 	FallbackChain    []string
 	SnapshotTTLGuard bool
+	InputGuard       bool
+	ReliabilityPilot bool
+	RouteProfiles    RouteProfileConfig
 	Plugins          PluginConfig
 	Weights          WeightConfig
 	TelemetrySink    telemetry.Sink
@@ -184,6 +191,11 @@ func DefaultConfig() Config {
 		},
 		FallbackChain:    []string{FallbackPolicyRanked, AlgorithmLeastRequest, AlgorithmP2C},
 		SnapshotTTLGuard: false,
+		InputGuard:       false,
+		ReliabilityPilot: false,
+		RouteProfiles: RouteProfileConfig{
+			ByRouteClass: map[types.RouteClass]RouteProfile{},
+		},
 		Plugins: PluginConfig{
 			Algorithms: map[types.RouteClass]string{
 				types.RouteGeneric:    AlgorithmP2C,
@@ -193,7 +205,9 @@ func DefaultConfig() Config {
 			Policies: []string{
 				PolicyHealthGate,
 				PolicyTenantQuota,
+				PolicyLLMBudgetGate,
 				PolicyLLMTokenAwareQueue,
+				PolicyLLMSessionAffinity,
 				PolicyLLMStageAware,
 				PolicyLLMKVAffinity,
 			},
@@ -239,6 +253,7 @@ func (c *Config) Validate() error {
 	errs = append(errs, validateBasicFields(c)...)
 	errs = append(errs, validateAlgorithmBindings(c)...)
 	errs = append(errs, validatePolicyRegistrations(c)...)
+	errs = append(errs, validateRouteProfiles(c)...)
 	errs = append(errs, validateObjectiveRegistration(c)...)
 	errs = append(errs, validateFallbackRegistrations(c)...)
 
@@ -266,8 +281,8 @@ func validateAlgorithmBindings(c *Config) []error {
 		}
 		seenRouteClass[rc] = struct{}{}
 
-		name, ok := c.Plugins.Algorithms[rc]
-		if !ok || name == "" {
+		name := c.resolveRouteProfile(rc).Algorithm
+		if name == "" {
 			out = append(out, lberrors.NewConfigError(
 				lberrors.CodeMissingAlgorithmBinding,
 				fmt.Sprintf("%s.%s", FieldPluginsAlgorithms, rc),
@@ -678,6 +693,20 @@ func WithWeightString(routeClass, metric string, w int) Option {
 func WithSnapshotTTLGuard(enabled bool) Option {
 	return func(c *Config) {
 		c.SnapshotTTLGuard = enabled
+	}
+}
+
+// WithInputGuard 设置是否启用 Route 输入防御校验。
+func WithInputGuard(enabled bool) Option {
+	return func(c *Config) {
+		c.InputGuard = enabled
+	}
+}
+
+// WithReliabilityPilot toggles pool priority and outlier isolation pilot.
+func WithReliabilityPilot(enabled bool) Option {
+	return func(c *Config) {
+		c.ReliabilityPilot = enabled
 	}
 }
 

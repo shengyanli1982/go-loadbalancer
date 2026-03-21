@@ -97,8 +97,8 @@ func (p *Plugin) weightedScore(routeClass types.RouteClass, node types.NodeSnaps
 	return weights.queue*float64(node.QueueDepth) +
 		weights.p95Latency*node.P95LatencyMs +
 		weights.errorRate*node.ErrorRate*100 +
-		weights.ttft*node.TTFTMs +
-		weights.tpot*node.TPOTMs -
+		weights.ttft*node.TTFTms +
+		weights.tpot*node.TPOTms -
 		weights.kvHit*node.KVCacheHitRate*100
 }
 

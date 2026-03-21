@@ -14,8 +14,9 @@ import (
 const pluginName = "p2c"
 
 const (
-	fnvOffset64 = 14695981039346656037
-	fnvPrime64  = 1099511628211
+	fnvOffset64    = 14695981039346656037
+	fnvPrime64     = 1099511628211
+	reasonCapacity = 10
 
 	reasonAlgorithmP2C         = "algorithm=p2c"
 	reasonP2CFromTwoChoices    = "p2c_selected_from_two_choices"
@@ -45,12 +46,12 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 
 	limit := min(topK, len(nodes))
 	selected := make([]types.Candidate, 0, limit)
-	reasonBuffer := make([]string, limit*2)
+	reasonBuffer := make([]string, limit*reasonCapacity)
 
 	// 先按 P2C 选出首个候选，后续候选按统一比较器补齐。
 	firstIdx := pickByTwoChoicesIndex(req, nodes)
 	first := nodes[firstIdx]
-	firstReason := reasonBuffer[:2:2]
+	firstReason := reasonBuffer[:2:reasonCapacity]
 	firstReason[0] = reasonAlgorithmP2C
 	firstReason[1] = reasonP2CFromTwoChoices
 	selected = append(selected, types.Candidate{
@@ -65,8 +66,8 @@ func (Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnaps
 	remaining := selectutil.SelectTopKExcludeNodeIDIndices(nodes, first.NodeID, limit-1)
 	for _, idx := range remaining {
 		node := nodes[idx]
-		reasonOffset := len(selected) * 2
-		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+2]
+		reasonOffset := len(selected) * reasonCapacity
+		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+reasonCapacity]
 		reason[0] = reasonAlgorithmP2C
 		reason[1] = reasonSelectedFromResidual
 		selected = append(selected, types.Candidate{
@@ -108,7 +109,7 @@ func hashRequest(req types.RequestContext) uint64 {
 }
 
 func hashString64a(h uint64, s string) uint64 {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		h ^= uint64(s[i])
 		h *= fnvPrime64
 	}

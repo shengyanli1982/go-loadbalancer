@@ -9,22 +9,24 @@ import (
 
 var inputValidator = validator.New(validator.WithRequiredStructEnabled())
 
-// ValidationError 表示输入字段级校验错误。
+// ValidationError represents a field-level input validation error.
 type ValidationError struct {
 	Field      string
 	Value      any
 	Constraint string
 }
 
-// Error 返回可读错误信息。
 func (e *ValidationError) Error() string {
 	return fmt.Sprintf("field=%s value=%v constraint=%s", e.Field, e.Value, e.Constraint)
 }
 
 type requestValidationView struct {
-	RouteClass     RouteClass `validate:"required,oneof=generic llm-prefill llm-decode"`
-	PromptTokens   int        `validate:"gte=0"`
-	ExpectedTokens int        `validate:"gte=0"`
+	RouteClass           RouteClass `validate:"required,oneof=generic llm-prefill llm-decode"`
+	PromptTokens         int        `validate:"gte=0"`
+	ExpectedTokens       int        `validate:"gte=0"`
+	BudgetMaxTotalTokens int        `validate:"gte=0"`
+	BudgetMaxInflight    int        `validate:"gte=0"`
+	BudgetMaxQueueDepth  int        `validate:"gte=0"`
 }
 
 type nodeValidationView struct {
@@ -42,17 +44,18 @@ type nodeValidationView struct {
 	TPOTMs         float64 `validate:"gte=0"`
 }
 
-// Validate 对请求上下文执行基础参数校验。
 func (r RequestContext) Validate() error {
 	view := requestValidationView{
-		RouteClass:     r.RouteClass,
-		PromptTokens:   r.PromptTokens,
-		ExpectedTokens: r.ExpectedTokens,
+		RouteClass:           r.RouteClass,
+		PromptTokens:         r.PromptTokens,
+		ExpectedTokens:       r.ExpectedTokens,
+		BudgetMaxTotalTokens: r.BudgetMaxTotalTokens,
+		BudgetMaxInflight:    r.BudgetMaxInflight,
+		BudgetMaxQueueDepth:  r.BudgetMaxQueueDepth,
 	}
 	return validateInput(view, mapRequestValidationError)
 }
 
-// Validate 对节点快照执行基础参数校验。
 func (n NodeSnapshot) Validate() error {
 	view := nodeValidationView{
 		NodeID:         n.NodeID,
@@ -65,8 +68,8 @@ func (n NodeSnapshot) Validate() error {
 		P95LatencyMs:   n.P95LatencyMs,
 		ErrorRate:      n.ErrorRate,
 		KVCacheHitRate: n.KVCacheHitRate,
-		TTFTMs:         n.TTFTMs,
-		TPOTMs:         n.TPOTMs,
+		TTFTMs:         n.TTFTms,
+		TPOTMs:         n.TPOTms,
 	}
 	return validateInput(view, mapNodeValidationError)
 }
@@ -100,6 +103,12 @@ func mapRequestValidationError(fieldErr validator.FieldError) error {
 		return &ValidationError{Field: "prompt_tokens", Value: fieldErr.Value(), Constraint: "must be >= 0"}
 	case "ExpectedTokens":
 		return &ValidationError{Field: "expected_tokens", Value: fieldErr.Value(), Constraint: "must be >= 0"}
+	case "BudgetMaxTotalTokens":
+		return &ValidationError{Field: "budget_max_total_tokens", Value: fieldErr.Value(), Constraint: "must be >= 0"}
+	case "BudgetMaxInflight":
+		return &ValidationError{Field: "budget_max_inflight", Value: fieldErr.Value(), Constraint: "must be >= 0"}
+	case "BudgetMaxQueueDepth":
+		return &ValidationError{Field: "budget_max_queue_depth", Value: fieldErr.Value(), Constraint: "must be >= 0"}
 	default:
 		return &ValidationError{Field: fieldErr.StructField(), Value: fieldErr.Value(), Constraint: fieldErr.Error()}
 	}

@@ -77,7 +77,7 @@ func (p *Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnap
 
 	bestIdx := -1
 	bestCurrent := 0
-	for i := 0; i < len(p.state.nodeIDs); i++ {
+	for i := range p.state.nodeIDs {
 		p.state.currents[i] += p.state.weights[i]
 		current := p.state.currents[i]
 		if bestIdx == -1 || current > bestCurrent || (current == bestCurrent && p.state.nodeIDs[i] < p.state.nodeIDs[bestIdx]) {
@@ -137,7 +137,7 @@ func (p *Plugin) ensureState(nodes []types.NodeSnapshot) {
 	}
 
 	firstIndexByNodeID := make(map[string]int, len(nodes))
-	for i := 0; i < len(nodes); i++ {
+	for i := range nodes {
 		node := &nodes[i]
 		weight := effectiveWeight(node)
 		state.signature[i] = nodeState{
@@ -154,7 +154,7 @@ func (p *Plugin) ensureState(nodes []types.NodeSnapshot) {
 	}
 
 	state.weightOrder = make([]int, len(state.nodeIDs))
-	for i := 0; i < len(state.nodeIDs); i++ {
+	for i := range state.nodeIDs {
 		state.weightOrder[i] = i
 	}
 	sort.Slice(state.weightOrder, func(i, j int) bool {
@@ -167,8 +167,8 @@ func (p *Plugin) ensureState(nodes []types.NodeSnapshot) {
 	})
 
 	total := 0
-	for i := 0; i < len(state.weights); i++ {
-		total += state.weights[i]
+	for _, weight := range state.weights {
+		total += weight
 	}
 	if total <= 0 {
 		total = len(state.weights)
@@ -181,7 +181,7 @@ func nodesEqualState(nodes []types.NodeSnapshot, signature []nodeState) bool {
 	if len(nodes) != len(signature) {
 		return false
 	}
-	for i := 0; i < len(nodes); i++ {
+	for i := range nodes {
 		if nodes[i].NodeID != signature[i].nodeID {
 			return false
 		}

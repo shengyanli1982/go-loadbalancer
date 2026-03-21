@@ -11,9 +11,12 @@ import (
 // TestRequestContextValidateSuccess 验证合法请求上下文通过校验。
 func TestRequestContextValidateSuccess(t *testing.T) {
 	req := RequestContext{
-		RouteClass:     RouteGeneric,
-		PromptTokens:   0,
-		ExpectedTokens: 10,
+		RouteClass:           RouteGeneric,
+		PromptTokens:         0,
+		ExpectedTokens:       10,
+		BudgetMaxTotalTokens: 4096,
+		BudgetMaxInflight:    8,
+		BudgetMaxQueueDepth:  16,
 	}
 	require.NoError(t, req.Validate())
 }
@@ -21,9 +24,12 @@ func TestRequestContextValidateSuccess(t *testing.T) {
 // TestRequestContextValidateInvalid 验证非法请求上下文返回字段级错误。
 func TestRequestContextValidateInvalid(t *testing.T) {
 	req := RequestContext{
-		RouteClass:     "bad",
-		PromptTokens:   -1,
-		ExpectedTokens: -2,
+		RouteClass:           "bad",
+		PromptTokens:         -1,
+		ExpectedTokens:       -2,
+		BudgetMaxTotalTokens: -3,
+		BudgetMaxInflight:    -4,
+		BudgetMaxQueueDepth:  -5,
 	}
 
 	err := req.Validate()
@@ -33,6 +39,9 @@ func TestRequestContextValidateInvalid(t *testing.T) {
 	assert.True(t, hasValidationField(validationErrs, "route_class"))
 	assert.True(t, hasValidationField(validationErrs, "prompt_tokens"))
 	assert.True(t, hasValidationField(validationErrs, "expected_tokens"))
+	assert.True(t, hasValidationField(validationErrs, "budget_max_total_tokens"))
+	assert.True(t, hasValidationField(validationErrs, "budget_max_inflight"))
+	assert.True(t, hasValidationField(validationErrs, "budget_max_queue_depth"))
 }
 
 // TestNodeSnapshotValidateSuccess 验证合法节点快照通过校验。
@@ -48,8 +57,8 @@ func TestNodeSnapshotValidateSuccess(t *testing.T) {
 		P95LatencyMs:   40,
 		ErrorRate:      0.1,
 		KVCacheHitRate: 0.5,
-		TTFTMs:         50,
-		TPOTMs:         5,
+		TTFTms:         50,
+		TPOTms:         5,
 	}
 	require.NoError(t, node.Validate())
 }
@@ -67,8 +76,8 @@ func TestNodeSnapshotValidateInvalid(t *testing.T) {
 		P95LatencyMs:   -1,
 		ErrorRate:      2,
 		KVCacheHitRate: -1,
-		TTFTMs:         -1,
-		TPOTMs:         -1,
+		TTFTms:         -1,
+		TPOTms:         -1,
 	}
 
 	err := node.Validate()

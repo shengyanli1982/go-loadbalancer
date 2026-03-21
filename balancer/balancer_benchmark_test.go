@@ -21,6 +21,7 @@ const (
 	benchmarkMetadataMaxQueueKey    = "tenant_quota_max_queue"
 	benchmarkAlgorithmEmpty         = "bench_empty_candidates"
 	benchmarkAlgorithmError         = "bench_error_candidates"
+	benchmarkPolicyEmpty            = "bench_empty_policy"
 	benchmarkObjectiveSleep         = "bench_sleep_objective"
 )
 
@@ -60,10 +61,21 @@ func (benchmarkSleepObjective) Choose(_ types.RequestContext, candidates []types
 	return candidates[0], nil
 }
 
+type benchmarkEmptyPolicy struct{}
+
+func (benchmarkEmptyPolicy) Name() string {
+	return benchmarkPolicyEmpty
+}
+
+func (benchmarkEmptyPolicy) ReRank(_ types.RequestContext, _ []types.Candidate) ([]types.Candidate, error) {
+	return nil, nil
+}
+
 func init() {
 	registry.MustRegisterAlgorithm(benchmarkEmptyCandidateAlgorithm{})
 	registry.MustRegisterAlgorithm(benchmarkErrorCandidateAlgorithm{})
 	registry.MustRegisterObjective(benchmarkSleepObjective{})
+	registry.MustRegisterPolicy(benchmarkEmptyPolicy{})
 }
 
 func BenchmarkRoute(b *testing.B) {
@@ -205,15 +217,11 @@ func benchmarkRouteSerialFallbackPolicyRanked(b *testing.B, nodeCount int) {
 	lb := benchmarkMustNewBalancer(
 		b,
 		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
-		config.WithPolicies(config.PolicyTenantQuota),
+		config.WithPolicies(benchmarkPolicyEmpty),
 		config.WithFallback(config.FallbackPolicyRanked, config.AlgorithmLeastRequest),
 	)
-	nodes := benchmarkRouteHighLoadNodes(nodeCount)
+	nodes := benchmarkRouteNodes(nodeCount)
 	req := benchmarkRouteRequest()
-	req.Metadata = map[string]string{
-		benchmarkMetadataMaxInflightKey: "1",
-		benchmarkMetadataMaxQueueKey:    "1",
-	}
 	benchmarkRouteSerialRun(b, lb, req, nodes)
 }
 

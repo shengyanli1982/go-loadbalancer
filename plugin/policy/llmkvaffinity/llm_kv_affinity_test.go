@@ -67,3 +67,33 @@ func TestReRankPreferRequestHintNodes(t *testing.T) {
 	assert.Contains(t, out[1].Reason, reasonHinted)
 	assert.NotContains(t, out[2].Reason, reasonHinted)
 }
+
+func TestReRankStableTieBreakByNodeID(t *testing.T) {
+	plugin := Plugin{}
+	req := types.RequestContext{RouteClass: types.RouteLLMPrefill}
+	candidates := []types.Candidate{
+		{Node: types.NodeSnapshot{NodeID: "n2", KVCacheHitRate: 0.5, Inflight: 1, QueueDepth: 1}},
+		{Node: types.NodeSnapshot{NodeID: "n1", KVCacheHitRate: 0.5, Inflight: 1, QueueDepth: 1}},
+	}
+
+	out, err := plugin.ReRank(req, candidates)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, "n1", out[0].Node.NodeID)
+	assert.Equal(t, "n2", out[1].Node.NodeID)
+}
+
+func TestReRankPrefillTieBreakPrefersLowerTTFTBeforeNodeID(t *testing.T) {
+	plugin := Plugin{}
+	req := types.RequestContext{RouteClass: types.RouteLLMPrefill}
+	candidates := []types.Candidate{
+		{Node: types.NodeSnapshot{NodeID: "n-decode", KVCacheHitRate: 0.5, Inflight: 1, QueueDepth: 1, TTFTms: 100}},
+		{Node: types.NodeSnapshot{NodeID: "n-prefill", KVCacheHitRate: 0.5, Inflight: 1, QueueDepth: 1, TTFTms: 20}},
+	}
+
+	out, err := plugin.ReRank(req, candidates)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, "n-prefill", out[0].Node.NodeID)
+	assert.Equal(t, "n-decode", out[1].Node.NodeID)
+}

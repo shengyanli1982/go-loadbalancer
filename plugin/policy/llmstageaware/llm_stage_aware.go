@@ -35,13 +35,12 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 		return nil, nil
 	}
 
-	out := append([]types.Candidate(nil), candidates...)
 	switch req.RouteClass {
 	case types.RouteLLMPrefill:
-		sort.SliceStable(out, func(i, j int) bool {
-			ai, aj := out[i].Node, out[j].Node
-			if ai.TTFTMs != aj.TTFTMs {
-				return ai.TTFTMs < aj.TTFTMs
+		sort.SliceStable(candidates, func(i, j int) bool {
+			ai, aj := candidates[i].Node, candidates[j].Node
+			if ai.TTFTms != aj.TTFTms {
+				return ai.TTFTms < aj.TTFTms
 			}
 			if ai.QueueDepth != aj.QueueDepth {
 				return ai.QueueDepth < aj.QueueDepth
@@ -51,14 +50,14 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 			}
 			return ai.NodeID < aj.NodeID
 		})
-		for i := range out {
-			out[i].Reason = append(out[i].Reason, reasonPrefill)
+		for i := range candidates {
+			candidates[i].Reason = append(candidates[i].Reason, reasonPrefill)
 		}
 	case types.RouteLLMDecode:
-		sort.SliceStable(out, func(i, j int) bool {
-			ai, aj := out[i].Node, out[j].Node
-			if ai.TPOTMs != aj.TPOTMs {
-				return ai.TPOTMs < aj.TPOTMs
+		sort.SliceStable(candidates, func(i, j int) bool {
+			ai, aj := candidates[i].Node, candidates[j].Node
+			if ai.TPOTms != aj.TPOTms {
+				return ai.TPOTms < aj.TPOTms
 			}
 			if ai.Inflight != aj.Inflight {
 				return ai.Inflight < aj.Inflight
@@ -68,15 +67,15 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 			}
 			return ai.NodeID < aj.NodeID
 		})
-		for i := range out {
-			out[i].Reason = append(out[i].Reason, reasonDecode)
+		for i := range candidates {
+			candidates[i].Reason = append(candidates[i].Reason, reasonDecode)
 		}
 	default:
-		for i := range out {
-			out[i].Reason = append(out[i].Reason, reasonSkipped)
+		for i := range candidates {
+			candidates[i].Reason = append(candidates[i].Reason, reasonSkipped)
 		}
 	}
-	return out, nil
+	return candidates, nil
 }
 
 var _ policy.Plugin = Plugin{}

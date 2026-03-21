@@ -213,8 +213,8 @@ func TestRouteDefaultConfigDifferentiatesLLMStages(t *testing.T) {
 			QueueDepth:     2,
 			P95LatencyMs:   10,
 			ErrorRate:      0.01,
-			TTFTMs:         20,
-			TPOTMs:         50,
+			TTFTms:         20,
+			TPOTms:         50,
 			KVCacheHitRate: 0.50,
 		},
 		{
@@ -224,8 +224,8 @@ func TestRouteDefaultConfigDifferentiatesLLMStages(t *testing.T) {
 			QueueDepth:     2,
 			P95LatencyMs:   10,
 			ErrorRate:      0.01,
-			TTFTMs:         100,
-			TPOTMs:         5,
+			TTFTms:         100,
+			TPOTms:         5,
 			KVCacheHitRate: 0.50,
 		},
 	}
@@ -264,8 +264,8 @@ func TestRouteDefaultConfigHonorsRequestKVHint(t *testing.T) {
 			QueueDepth:     1,
 			P95LatencyMs:   10,
 			ErrorRate:      0.01,
-			TTFTMs:         30,
-			TPOTMs:         30,
+			TTFTms:         30,
+			TPOTms:         30,
 			KVCacheHitRate: 0.10,
 		},
 		{
@@ -275,8 +275,8 @@ func TestRouteDefaultConfigHonorsRequestKVHint(t *testing.T) {
 			QueueDepth:     1,
 			P95LatencyMs:   10,
 			ErrorRate:      0.01,
-			TTFTMs:         30,
-			TPOTMs:         30,
+			TTFTms:         30,
+			TPOTms:         30,
 			KVCacheHitRate: 0.95,
 		},
 	}
@@ -295,6 +295,211 @@ func TestRouteDefaultConfigHonorsRequestKVHint(t *testing.T) {
 	assert.True(t, containsReason(candidate.Reason, "llm_kv_affinity_request_hint"))
 }
 
+func TestRouteProfileOverrideLegacyAlgorithm(t *testing.T) {
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyHealthGate),
+		config.WithRouteProfile(types.RouteGeneric, config.RouteProfile{
+			Algorithm: config.AlgorithmRoundRobin,
+			Policies:  []string{config.PolicyHealthGate},
+		}),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{RouteClass: types.RouteGeneric}
+	nodes := []types.NodeSnapshot{
+		{NodeID: "n1", Healthy: true, Inflight: 100, QueueDepth: 100},
+		{NodeID: "n2", Healthy: true, Inflight: 1, QueueDepth: 1},
+	}
+
+	candidate, routeErr := b.Route(context.Background(), req, nodes)
+	require.NoError(t, routeErr)
+	assert.Equal(t, "n1", candidate.Node.NodeID)
+}
+
+func TestRouteProfileOverrideLegacyPolicies(t *testing.T) {
+	if err := registry.RegisterPolicy(softFailPolicy{}); err != nil && !errors.Is(err, lberrors.ErrDuplicatePlugin) {
+		require.NoError(t, err)
+	}
+
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies("soft_fail_policy"),
+		config.WithRouteProfile(types.RouteGeneric, config.RouteProfile{
+			Algorithm: config.AlgorithmLeastRequest,
+			Policies:  []string{config.PolicyHealthGate},
+		}),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{RouteClass: types.RouteGeneric}
+	nodes := []types.NodeSnapshot{{NodeID: "n1", Healthy: true, Inflight: 1}}
+
+	candidate, routeErr := b.Route(context.Background(), req, nodes)
+	require.NoError(t, routeErr)
+	assert.Equal(t, "n1", candidate.Node.NodeID)
+	assert.False(t, containsReason(candidate.Reason, "fallback="))
+}
+
+func TestRouteSessionAffinityFromPrefillToDecode(t *testing.T) {
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteLLMPrefill, config.AlgorithmRoundRobin),
+		config.WithAlgorithm(types.RouteLLMDecode, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyHealthGate, config.PolicyLLMSessionAffinity),
+	)
+	require.NoError(t, err)
+
+	nodes := []types.NodeSnapshot{
+		{NodeID: "n1", Healthy: true, Inflight: 10, QueueDepth: 10},
+		{NodeID: "n2", Healthy: true, Inflight: 1, QueueDepth: 1},
+	}
+	prefillReq := types.RequestContext{
+		RouteClass:     types.RouteLLMPrefill,
+		SessionID:      "s-1",
+		PromptTokens:   128,
+		ExpectedTokens: 64,
+	}
+	prefillCandidate, err := b.Route(context.Background(), prefillReq, nodes)
+	require.NoError(t, err)
+	assert.Equal(t, "n1", prefillCandidate.Node.NodeID)
+
+	decodeReq := types.RequestContext{
+		RouteClass:     types.RouteLLMDecode,
+		SessionID:      "s-1",
+		PromptTokens:   128,
+		ExpectedTokens: 64,
+	}
+	decodeCandidate, err := b.Route(context.Background(), decodeReq, nodes)
+	require.NoError(t, err)
+	assert.Equal(t, "n1", decodeCandidate.Node.NodeID)
+	assert.True(t, containsReason(decodeCandidate.Reason, "llm_session_affinity_hit"))
+}
+
+func TestRouteDegradeChainUsesRouteProfileOverride(t *testing.T) {
+	if err := registry.RegisterPolicy(softFailPolicy{}); err != nil && !errors.Is(err, lberrors.ErrDuplicatePlugin) {
+		require.NoError(t, err)
+	}
+
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteLLMDecode, config.AlgorithmLeastRequest),
+		config.WithPolicies("soft_fail_policy"),
+		config.WithFallback(config.AlgorithmLeastRequest),
+		config.WithRouteProfile(types.RouteLLMDecode, config.RouteProfile{
+			DegradeChain: []string{config.AlgorithmRoundRobin},
+		}),
+	)
+	require.NoError(t, err)
+
+	nodes := []types.NodeSnapshot{
+		{NodeID: "n1", Healthy: true, Inflight: 20, QueueDepth: 20},
+		{NodeID: "n2", Healthy: true, Inflight: 1, QueueDepth: 1},
+	}
+	req := types.RequestContext{
+		RouteClass:     types.RouteLLMDecode,
+		PromptTokens:   64,
+		ExpectedTokens: 64,
+	}
+	candidate, routeErr := b.Route(context.Background(), req, nodes)
+	require.NoError(t, routeErr)
+	assert.Equal(t, "n1", candidate.Node.NodeID)
+	assert.True(t, containsReason(candidate.Reason, "fallback=rr"))
+}
+
+func TestRouteReliabilityPilotPrefersPrimaryPool(t *testing.T) {
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithReliabilityPilot(true),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyHealthGate),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{
+		RouteClass:     types.RouteGeneric,
+		PrimaryPool:    "pool-a",
+		SecondaryPools: []string{"pool-b"},
+	}
+	nodes := []types.NodeSnapshot{
+		{NodeID: "a1", Pool: "pool-a", Healthy: true, Inflight: 10, QueueDepth: 10},
+		{NodeID: "b1", Pool: "pool-b", Healthy: true, Inflight: 1, QueueDepth: 1},
+	}
+
+	candidate, routeErr := b.Route(context.Background(), req, nodes)
+	require.NoError(t, routeErr)
+	assert.Equal(t, "a1", candidate.Node.NodeID)
+}
+
+func TestRouteReliabilityPilotDegradesToSecondaryPoolOnOutlier(t *testing.T) {
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithReliabilityPilot(true),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyHealthGate),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{
+		RouteClass:     types.RouteGeneric,
+		PrimaryPool:    "pool-a",
+		SecondaryPools: []string{"pool-b"},
+	}
+	nodes := []types.NodeSnapshot{
+		{NodeID: "a1", Pool: "pool-a", Outlier: true, Healthy: true, Inflight: 1, QueueDepth: 1},
+		{NodeID: "b1", Pool: "pool-b", Healthy: true, Inflight: 2, QueueDepth: 1},
+	}
+
+	candidate, routeErr := b.Route(context.Background(), req, nodes)
+	require.NoError(t, routeErr)
+	assert.Equal(t, "b1", candidate.Node.NodeID)
+}
+
+func TestRouteReliabilityPilotTelemetryContainsPoolDegradeReason(t *testing.T) {
+	cfg := config.DefaultConfig()
+	sink := &captureSink{}
+	b, err := balancer.New(
+		cfg,
+		config.WithReliabilityPilot(true),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyHealthGate),
+		config.WithTelemetrySink(sink),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{
+		RouteClass:     types.RouteGeneric,
+		PrimaryPool:    "pool-a",
+		SecondaryPools: []string{"pool-b"},
+	}
+	nodes := []types.NodeSnapshot{
+		{NodeID: "a1", Pool: "pool-a", Outlier: true, Healthy: true, Inflight: 1, QueueDepth: 1},
+		{NodeID: "b1", Pool: "pool-b", Healthy: true, Inflight: 2, QueueDepth: 1},
+	}
+
+	_, routeErr := b.Route(context.Background(), req, nodes)
+	require.NoError(t, routeErr)
+
+	events := sink.eventsByType(telemetry.EventRouteDecision)
+	require.NotEmpty(t, events)
+	found := false
+	for _, event := range events {
+		if strings.Contains(event.Reason, "pool_degrade=pool-a->pool-b") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found)
+}
+
 // TestRouteNoHealthyNodes 验证无健康节点时返回预期错误。
 func TestRouteNoHealthyNodes(t *testing.T) {
 	cfg := config.DefaultConfig()
@@ -304,6 +509,128 @@ func TestRouteNoHealthyNodes(t *testing.T) {
 	_, routeErr := b.Route(context.Background(), types.RequestContext{RouteClass: types.RouteGeneric}, []types.NodeSnapshot{{NodeID: "n1", Healthy: false}})
 	require.Error(t, routeErr)
 	assert.ErrorIs(t, routeErr, lberrors.ErrNoHealthyNodes)
+}
+
+func TestRouteInputGuardRejectsInvalidRequest(t *testing.T) {
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithInputGuard(true),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+	)
+	require.NoError(t, err)
+
+	_, routeErr := b.Route(context.Background(), types.RequestContext{}, []types.NodeSnapshot{{NodeID: "n1", Healthy: true}})
+	require.Error(t, routeErr)
+	assert.ErrorIs(t, routeErr, lberrors.ErrInputGuardRejectedRequest)
+	assert.Contains(t, routeErr.Error(), lberrors.CodeInputGuardRejectedRequest)
+}
+
+func TestRouteInputGuardRejectsInvalidNode(t *testing.T) {
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithInputGuard(true),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{RouteClass: types.RouteGeneric}
+	_, routeErr := b.Route(context.Background(), req, []types.NodeSnapshot{{NodeID: "", Healthy: true}})
+	require.Error(t, routeErr)
+	assert.ErrorIs(t, routeErr, lberrors.ErrInputGuardRejectedNode)
+	assert.Contains(t, routeErr.Error(), lberrors.CodeInputGuardRejectedNode)
+}
+
+func TestRouteInputGuardDisabledKeepsLegacyBehavior(t *testing.T) {
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithInputGuard(false),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+	)
+	require.NoError(t, err)
+
+	_, routeErr := b.Route(context.Background(), types.RequestContext{}, []types.NodeSnapshot{{NodeID: "n1", Healthy: true}})
+	require.Error(t, routeErr)
+	assert.ErrorIs(t, routeErr, lberrors.ErrPluginMisconfigured)
+	assert.NotErrorIs(t, routeErr, lberrors.ErrInputGuardRejectedRequest)
+}
+
+func TestRouteInputGuardTelemetryIncludesRejectCode(t *testing.T) {
+	cfg := config.DefaultConfig()
+	sink := &captureSink{}
+	b, err := balancer.New(
+		cfg,
+		config.WithInputGuard(true),
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithTelemetrySink(sink),
+	)
+	require.NoError(t, err)
+
+	_, routeErr := b.Route(context.Background(), types.RequestContext{}, []types.NodeSnapshot{{NodeID: "n1", Healthy: true}})
+	require.Error(t, routeErr)
+
+	events := sink.eventsByType(telemetry.EventRouteDecision)
+	require.NotEmpty(t, events)
+	last := events[len(events)-1]
+	assert.Equal(t, "filter", last.Stage)
+	assert.Equal(t, "failed", last.Outcome)
+	assert.Contains(t, last.Reason, lberrors.CodeInputGuardRejectedRequest)
+}
+
+func TestRouteLLMBudgetGateRejectsOverTotalTokenBudget(t *testing.T) {
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteLLMPrefill, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyLLMBudgetGate),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{
+		RouteClass:           types.RouteLLMPrefill,
+		PromptTokens:         1024,
+		ExpectedTokens:       1024,
+		BudgetMaxTotalTokens: 512,
+	}
+	nodes := []types.NodeSnapshot{{NodeID: "n1", Healthy: true, Inflight: 1, QueueDepth: 1}}
+
+	_, routeErr := b.Route(context.Background(), req, nodes)
+	require.Error(t, routeErr)
+	assert.ErrorIs(t, routeErr, lberrors.ErrNoCandidate)
+	assert.Contains(t, routeErr.Error(), "reject=total_tokens")
+}
+
+func TestRouteLLMBudgetGateHardRejectEmitsTelemetry(t *testing.T) {
+	cfg := config.DefaultConfig()
+	sink := &captureSink{}
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteLLMPrefill, config.AlgorithmLeastRequest),
+		config.WithPolicies(config.PolicyLLMBudgetGate),
+		config.WithTelemetrySink(sink),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{
+		RouteClass:          types.RouteLLMPrefill,
+		BudgetMaxInflight:   1,
+		BudgetMaxQueueDepth: 1,
+	}
+	nodes := []types.NodeSnapshot{{NodeID: "n1", Healthy: true, Inflight: 2, QueueDepth: 2}}
+
+	_, routeErr := b.Route(context.Background(), req, nodes)
+	require.Error(t, routeErr)
+	assert.ErrorIs(t, routeErr, lberrors.ErrNoCandidate)
+
+	events := sink.eventsByType(telemetry.EventRouteDecision)
+	require.NotEmpty(t, events)
+	last := events[len(events)-1]
+	assert.Equal(t, "policy", last.Stage)
+	assert.Equal(t, "failed", last.Outcome)
+	assert.Equal(t, config.PolicyLLMBudgetGate, last.Plugin)
+	assert.Contains(t, last.Reason, "reject=node_budget")
 }
 
 // TestRouteHardPolicyErrorFailsClosed 验证硬约束策略失败时不会被 fallback 绕过。

@@ -37,7 +37,9 @@ func TestDefaultConfigIncludesLLMPolicies(t *testing.T) {
 	assert.Equal(t, []string{
 		config.PolicyHealthGate,
 		config.PolicyTenantQuota,
+		config.PolicyLLMBudgetGate,
 		config.PolicyLLMTokenAwareQueue,
+		config.PolicyLLMSessionAffinity,
 		config.PolicyLLMStageAware,
 		config.PolicyLLMKVAffinity,
 	}, cfg.Plugins.Policies)
@@ -46,6 +48,16 @@ func TestDefaultConfigIncludesLLMPolicies(t *testing.T) {
 func TestDefaultConfigObjectiveConcurrencyGuard(t *testing.T) {
 	cfg := config.DefaultConfig()
 	assert.Equal(t, 128, cfg.Plugins.Objective.MaxConcurrent)
+}
+
+func TestDefaultConfigInputGuardDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	assert.False(t, cfg.InputGuard)
+}
+
+func TestDefaultConfigReliabilityPilotDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	assert.False(t, cfg.ReliabilityPilot)
 }
 
 // TestValidateReturnsJoinedErrors 验证多项错误会以 join 形式返回。
@@ -101,6 +113,109 @@ func TestWithSnapshotTTLGuard(t *testing.T) {
 
 	config.WithSnapshotTTLGuard(true)(&cfg)
 	assert.True(t, cfg.SnapshotTTLGuard)
+}
+
+func TestWithInputGuard(t *testing.T) {
+	cfg := config.DefaultConfig()
+	assert.False(t, cfg.InputGuard)
+
+	config.WithInputGuard(true)(&cfg)
+	assert.True(t, cfg.InputGuard)
+}
+
+func TestWithReliabilityPilot(t *testing.T) {
+	cfg := config.DefaultConfig()
+	assert.False(t, cfg.ReliabilityPilot)
+
+	config.WithReliabilityPilot(true)(&cfg)
+	assert.True(t, cfg.ReliabilityPilot)
+}
+
+func TestRouteProfileForFallsBackToLegacyBindings(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	profile := cfg.RouteProfileFor(types.RouteLLMPrefill)
+	assert.Equal(t, cfg.Plugins.Algorithms[types.RouteLLMPrefill], profile.Algorithm)
+	assert.Equal(t, cfg.Plugins.Policies, profile.Policies)
+
+	profile.Policies[0] = "mutated_policy"
+	assert.NotEqual(t, profile.Policies[0], cfg.Plugins.Policies[0])
+}
+
+func TestWithRouteProfileOverridesLegacyBindings(t *testing.T) {
+	cfg := config.DefaultConfig()
+	config.WithRouteProfile(types.RouteGeneric, config.RouteProfile{
+		Algorithm: config.AlgorithmRoundRobin,
+		Policies:  []string{config.PolicyHealthGate},
+		DegradeChain: []string{
+			config.FallbackPolicyRanked,
+			config.AlgorithmRoundRobin,
+		},
+	})(&cfg)
+
+	profile := cfg.RouteProfileFor(types.RouteGeneric)
+	assert.Equal(t, config.AlgorithmRoundRobin, profile.Algorithm)
+	assert.Equal(t, []string{config.PolicyHealthGate}, profile.Policies)
+	assert.Equal(t, []string{config.FallbackPolicyRanked, config.AlgorithmRoundRobin}, profile.DegradeChain)
+}
+
+func TestValidateAllowsProfileAlgorithmWithoutLegacyBinding(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.RouteClasses = []types.RouteClass{types.RouteGeneric}
+	cfg.Plugins.Algorithms = map[types.RouteClass]string{}
+	cfg.Plugins.Policies = nil
+	config.WithRouteProfile(types.RouteGeneric, config.RouteProfile{
+		Algorithm: config.AlgorithmLeastRequest,
+		Policies:  []string{config.PolicyHealthGate},
+	})(&cfg)
+
+	require.NoError(t, cfg.Validate())
+}
+
+func TestValidateRouteProfileInvalidKey(t *testing.T) {
+	cfg := config.DefaultConfig()
+	config.WithRouteProfile(types.RouteClass("bad"), config.RouteProfile{
+		Algorithm: config.AlgorithmLeastRequest,
+		Policies:  []string{config.PolicyHealthGate},
+	})(&cfg)
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	cfgErrors := flattenConfigErrors(err)
+	assert.True(t, hasConfigError(cfgErrors, lberrors.CodeInvalidRouteClass, "route_profiles.bad"))
+}
+
+func TestValidateRouteProfileUnknownAlgorithm(t *testing.T) {
+	cfg := config.DefaultConfig()
+	config.WithRouteProfile(types.RouteGeneric, config.RouteProfile{
+		Algorithm: "unknown_algo",
+		Policies:  []string{config.PolicyHealthGate},
+	})(&cfg)
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	cfgErrors := flattenConfigErrors(err)
+	assert.True(t, hasConfigError(cfgErrors, lberrors.CodeMissingAlgorithmBinding, "route_profiles.generic.algorithm"))
+}
+
+func TestWithRouteDegradeChainOverridesFallbackChain(t *testing.T) {
+	cfg := config.DefaultConfig()
+	config.WithRouteDegradeChain(types.RouteLLMDecode, config.AlgorithmRoundRobin, config.AlgorithmLeastRequest)(&cfg)
+
+	profile := cfg.RouteProfileFor(types.RouteLLMDecode)
+	assert.Equal(t, []string{config.AlgorithmRoundRobin, config.AlgorithmLeastRequest}, profile.DegradeChain)
+}
+
+func TestValidateRouteProfileInvalidDegradeChain(t *testing.T) {
+	cfg := config.DefaultConfig()
+	config.WithRouteProfile(types.RouteLLMDecode, config.RouteProfile{
+		DegradeChain: []string{"unknown_degrade_algo"},
+	})(&cfg)
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	cfgErrors := flattenConfigErrors(err)
+	assert.True(t, hasConfigError(cfgErrors, lberrors.CodeInvalidFallbackChain, "route_profiles.llm-decode.degrade_chain[0]"))
 }
 
 // TestValidateSkipWeightChecksWhenObjectiveDisabled 验证 objective 关闭时不强制校验 weighted 权重规则。
