@@ -200,9 +200,12 @@ func TestRouteSuccess(t *testing.T) {
 	assert.Equal(t, "n2", candidate.Node.NodeID)
 }
 
-func TestRouteDefaultConfigDifferentiatesLLMStages(t *testing.T) {
+func TestRouteStageAwarePolicyRequiresExplicitOptIn(t *testing.T) {
 	cfg := config.DefaultConfig()
-	b, err := balancer.New(cfg)
+	b, err := balancer.New(
+		cfg,
+		config.WithPolicies(config.PolicyHealthGate, config.PolicyLLMStageAware),
+	)
 	require.NoError(t, err)
 
 	nodes := []types.NodeSnapshot{
@@ -251,9 +254,12 @@ func TestRouteDefaultConfigDifferentiatesLLMStages(t *testing.T) {
 	assert.True(t, containsReason(decodeCandidate.Reason, "llm_stage_aware_decode"))
 }
 
-func TestRouteDefaultConfigHonorsRequestKVHint(t *testing.T) {
+func TestRouteKVAffinityPolicyRequiresExplicitOptIn(t *testing.T) {
 	cfg := config.DefaultConfig()
-	b, err := balancer.New(cfg)
+	b, err := balancer.New(
+		cfg,
+		config.WithPolicies(config.PolicyHealthGate, config.PolicyLLMKVAffinity),
+	)
 	require.NoError(t, err)
 
 	nodes := []types.NodeSnapshot{

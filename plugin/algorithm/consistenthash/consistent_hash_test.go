@@ -10,7 +10,6 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
-// TestSelectCandidatesStableForSameKey 验证同一 key 的首选节点稳定。
 func TestSelectCandidatesStableForSameKey(t *testing.T) {
 	plugin := &Plugin{}
 	req := types.RequestContext{SessionID: "session-a"}
@@ -32,10 +31,9 @@ func TestSelectCandidatesStableForSameKey(t *testing.T) {
 	}
 }
 
-// TestSelectCandidatesTopKUnique 验证 topK 返回的候选节点不重复。
 func TestSelectCandidatesTopKUnique(t *testing.T) {
 	plugin := &Plugin{}
-	req := types.RequestContext{RequestID: "req-1"}
+	req := types.RequestContext{SessionID: "session-b"}
 	nodes := []types.NodeSnapshot{
 		{NodeID: "n1", StaticWeight: 1},
 		{NodeID: "n2", StaticWeight: 2},
@@ -54,7 +52,6 @@ func TestSelectCandidatesTopKUnique(t *testing.T) {
 	}
 }
 
-// TestSelectCandidatesInvalidInput 验证参数边界。
 func TestSelectCandidatesInvalidInput(t *testing.T) {
 	plugin := &Plugin{}
 	_, err := plugin.SelectCandidates(types.RequestContext{}, nil, 1)
@@ -63,4 +60,10 @@ func TestSelectCandidatesInvalidInput(t *testing.T) {
 	_, err = plugin.SelectCandidates(types.RequestContext{}, []types.NodeSnapshot{{NodeID: "n1"}}, 0)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, lberrors.ErrPluginMisconfigured)
+}
+
+func TestSelectCandidatesRequireSessionID(t *testing.T) {
+	plugin := &Plugin{}
+	_, err := plugin.SelectCandidates(types.RequestContext{}, []types.NodeSnapshot{{NodeID: "n1", StaticWeight: 1}}, 1)
+	require.ErrorIs(t, err, lberrors.ErrNoCandidate)
 }

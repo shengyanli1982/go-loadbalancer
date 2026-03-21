@@ -25,8 +25,6 @@ const (
 	benchmarkObjectiveSleep         = "bench_sleep_objective"
 )
 
-var benchmarkModelASet = types.NewModelCapabilitySet(map[string]bool{"model-a": true})
-
 type benchmarkEmptyCandidateAlgorithm struct{}
 
 func (benchmarkEmptyCandidateAlgorithm) Name() string {
@@ -123,19 +121,6 @@ func BenchmarkRouteFailurePaths(b *testing.B) {
 		req := benchmarkRouteRequest()
 		nodes := []types.NodeSnapshot{{NodeID: "n0", Healthy: false}}
 		benchmarkRouteSerialExpectError(b, lb, req, nodes, lberrors.ErrNoHealthyNodes)
-	})
-	b.Run("serial_no_model_available", func(b *testing.B) {
-		lb := benchmarkNewBalancer(b)
-		req := benchmarkRouteRequest()
-		nodes := []types.NodeSnapshot{
-			{
-				NodeID:            "n0",
-				Healthy:           true,
-				ModelAvailability: map[string]bool{"model-b": true},
-				ModelCapability:   types.NewModelCapabilitySet(map[string]bool{"model-b": true}),
-			},
-		}
-		benchmarkRouteSerialExpectError(b, lb, req, nodes, lberrors.ErrNoModelAvailable)
 	})
 	b.Run("serial_empty_candidates", func(b *testing.B) {
 		lb := benchmarkMustNewBalancer(
@@ -361,7 +346,6 @@ func benchmarkRouteRequest() types.RequestContext {
 		SessionID:  "session-bench",
 		TenantID:   "tenant-bench",
 		RouteClass: types.RouteGeneric,
-		Model:      "model-a",
 	}
 }
 
@@ -369,13 +353,12 @@ func benchmarkRouteNodes(n int) []types.NodeSnapshot {
 	nodes := make([]types.NodeSnapshot, 0, n)
 	for i := 0; i < n; i++ {
 		nodes = append(nodes, types.NodeSnapshot{
-			NodeID:          "n" + strconv.Itoa(i),
-			Healthy:         true,
-			Inflight:        (i*31 + 17) % 200,
-			QueueDepth:      (i*23 + 11) % 150,
-			P95LatencyMs:    float64((i*19)%120) + 1,
-			ErrorRate:       float64((i*7)%20) / 1000.0,
-			ModelCapability: benchmarkModelASet,
+			NodeID:       "n" + strconv.Itoa(i),
+			Healthy:      true,
+			Inflight:     (i*31 + 17) % 200,
+			QueueDepth:   (i*23 + 11) % 150,
+			P95LatencyMs: float64((i*19)%120) + 1,
+			ErrorRate:    float64((i*7)%20) / 1000.0,
 		})
 	}
 	return nodes
@@ -385,13 +368,12 @@ func benchmarkRouteHighLoadNodes(n int) []types.NodeSnapshot {
 	nodes := make([]types.NodeSnapshot, 0, n)
 	for i := 0; i < n; i++ {
 		nodes = append(nodes, types.NodeSnapshot{
-			NodeID:          "h" + strconv.Itoa(i),
-			Healthy:         true,
-			Inflight:        10 + (i % 50),
-			QueueDepth:      10 + (i % 50),
-			P95LatencyMs:    float64((i % 80) + 20),
-			ErrorRate:       float64((i%20)+1) / 1000.0,
-			ModelCapability: benchmarkModelASet,
+			NodeID:       "h" + strconv.Itoa(i),
+			Healthy:      true,
+			Inflight:     10 + (i % 50),
+			QueueDepth:   10 + (i % 50),
+			P95LatencyMs: float64((i % 80) + 20),
+			ErrorRate:    float64((i%20)+1) / 1000.0,
 		})
 	}
 	return nodes

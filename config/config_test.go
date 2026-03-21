@@ -32,17 +32,25 @@ func TestDefaultConfigValidate(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
-func TestDefaultConfigIncludesLLMPolicies(t *testing.T) {
+func TestDefaultConfigUsesOnlyCapacityAndHealthPolicies(t *testing.T) {
 	cfg := config.DefaultConfig()
 	assert.Equal(t, []string{
 		config.PolicyHealthGate,
 		config.PolicyTenantQuota,
 		config.PolicyLLMBudgetGate,
-		config.PolicyLLMTokenAwareQueue,
-		config.PolicyLLMSessionAffinity,
-		config.PolicyLLMStageAware,
-		config.PolicyLLMKVAffinity,
 	}, cfg.Plugins.Policies)
+}
+
+func TestDefaultConfigLLMWeightsExcludeKVHit(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	prefillWeights := cfg.Weights.ByRouteClass[types.RouteLLMPrefill]
+	decodeWeights := cfg.Weights.ByRouteClass[types.RouteLLMDecode]
+
+	assert.NotContains(t, prefillWeights, config.MetricKVHit)
+	assert.NotContains(t, decodeWeights, config.MetricKVHit)
+	assert.Equal(t, 10000, sumWeights(prefillWeights))
+	assert.Equal(t, 10000, sumWeights(decodeWeights))
 }
 
 func TestDefaultConfigObjectiveConcurrencyGuard(t *testing.T) {
@@ -454,6 +462,14 @@ func hasConfigError(errs []*lberrors.ConfigError, code, field string) bool {
 		}
 	}
 	return false
+}
+
+func sumWeights(weights map[string]int) int {
+	total := 0
+	for _, weight := range weights {
+		total += weight
+	}
+	return total
 }
 
 var _ objective.Plugin = customObjective{}

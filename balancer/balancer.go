@@ -565,15 +565,13 @@ func (b *a2xBalancer) emit(e telemetry.TelemetryEvent) {
 	telemetry.EmitSafe(b.sink, e)
 }
 
-// filterNodes 按健康状态与模型可用性执行硬约束过滤。
-func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot, enforceSnapshotTTL bool) ([]types.NodeSnapshot, error) {
+// filterNodes 按健康状态与快照新鲜度执行硬约束过滤。
+func filterNodes(_ types.RequestContext, nodes []types.NodeSnapshot, enforceSnapshotTTL bool) ([]types.NodeSnapshot, error) {
 	if len(nodes) == 0 {
 		return nil, lberrors.ErrNoHealthyNodes
 	}
 
-	model := req.Model
 	healthyCount := 0
-	matchedCount := 0
 	for i := range nodes {
 		n := &nodes[i]
 		if !n.Healthy {
@@ -583,23 +581,16 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot, enforceSn
 			continue
 		}
 		healthyCount++
-		if model != "" && !nodeSupportsModel(n, model) {
-			continue
-		}
-		matchedCount++
 	}
 
 	if healthyCount == 0 {
 		return nil, lberrors.ErrNoHealthyNodes
 	}
-	if matchedCount == 0 {
-		return nil, lberrors.ErrNoModelAvailable
-	}
-	if matchedCount == len(nodes) {
+	if healthyCount == len(nodes) {
 		return nodes, nil
 	}
 
-	filtered := make([]types.NodeSnapshot, 0, matchedCount)
+	filtered := make([]types.NodeSnapshot, 0, healthyCount)
 	for i := range nodes {
 		n := &nodes[i]
 		if !n.Healthy {
@@ -608,22 +599,9 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot, enforceSn
 		if enforceSnapshotTTL && n.FreshnessTTLms <= 0 {
 			continue
 		}
-		if model != "" && !nodeSupportsModel(n, model) {
-			continue
-		}
 		filtered = append(filtered, *n)
 	}
 	return filtered, nil
-}
-
-func nodeSupportsModel(n *types.NodeSnapshot, model string) bool {
-	if n.ModelCapability != nil {
-		return n.ModelCapability.Allows(model)
-	}
-	if len(n.ModelAvailability) == 0 {
-		return true
-	}
-	return n.ModelAvailability[model]
 }
 
 func validateInputGuardRequest(req types.RequestContext) error {

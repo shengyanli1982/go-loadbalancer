@@ -61,7 +61,6 @@ const (
 var requiredLLMMetrics = [...]string{
 	MetricTTFT,
 	MetricTPOT,
-	MetricKVHit,
 }
 
 var cfgValidator = validator.New(validator.WithRequiredStructEnabled())
@@ -206,10 +205,6 @@ func DefaultConfig() Config {
 				PolicyHealthGate,
 				PolicyTenantQuota,
 				PolicyLLMBudgetGate,
-				PolicyLLMTokenAwareQueue,
-				PolicyLLMSessionAffinity,
-				PolicyLLMStageAware,
-				PolicyLLMKVAffinity,
 			},
 			Objective: ObjectiveConfig{
 				Enabled:       false,
@@ -226,20 +221,18 @@ func DefaultConfig() Config {
 					MetricErrorRate:  2000,
 				},
 				types.RouteLLMPrefill: {
-					MetricQueue:      2000,
-					MetricP95Latency: 1500,
+					MetricQueue:      2500,
+					MetricP95Latency: 2000,
 					MetricErrorRate:  1500,
-					MetricTTFT:       2500,
+					MetricTTFT:       3000,
 					MetricTPOT:       1000,
-					MetricKVHit:      1500,
 				},
 				types.RouteLLMDecode: {
 					MetricQueue:      2000,
-					MetricP95Latency: 1500,
+					MetricP95Latency: 2000,
 					MetricErrorRate:  1500,
 					MetricTTFT:       1000,
-					MetricTPOT:       2500,
-					MetricKVHit:      1500,
+					MetricTPOT:       3500,
 				},
 			},
 		},
@@ -406,7 +399,7 @@ func validateWeightedObjectiveWeights(c *Config) []error {
 						lberrors.CodeMissingLLMWeights,
 						fmt.Sprintf("%s.%s.%s", FieldWeights, rc, metric),
 						nil,
-						"llm route classes must include ttft,tpot,kv_hit",
+						"llm route classes must include ttft,tpot",
 					))
 				}
 			}

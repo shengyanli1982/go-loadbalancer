@@ -28,20 +28,18 @@ var (
 		errorRate:  0.2,
 	}
 	llmPrefillWeights = scoreWeights{
-		queue:      0.20,
-		p95Latency: 0.15,
+		queue:      0.25,
+		p95Latency: 0.20,
 		errorRate:  0.15,
-		ttft:       0.25,
+		ttft:       0.30,
 		tpot:       0.10,
-		kvHit:      0.15,
 	}
 	llmDecodeWeights = scoreWeights{
 		queue:      0.20,
-		p95Latency: 0.15,
+		p95Latency: 0.20,
 		errorRate:  0.15,
 		ttft:       0.10,
-		tpot:       0.25,
-		kvHit:      0.15,
+		tpot:       0.35,
 	}
 )
 

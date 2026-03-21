@@ -36,13 +36,13 @@ A2X is built for:
 
 ## Capability Portfolio
 
-| Layer             | Built-in                                                                                     | What It Gives You                          |
-| ----------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Core Balancer     | Routing pipeline + fallback                                                                  | Stable hot path and predictable behavior   |
-| Algorithm Plugins | `rr`, `wrr`, `ch`, `p2c`, `lr`                                                               | Fast balancing strategies for real traffic |
-| Policy Plugins    | `health_gate`, `tenant_quota`, `llm_kv_affinity`, `llm_stage_aware`, `llm_token_aware_queue` | Hard constraints before final pick         |
-| Objective Plugin  | `weighted_objective` (optional)                                                              | Top-K second-pass optimization             |
-| Telemetry         | `Sink`, `NoopSink`                                                                           | Clean observability integration boundary   |
+| Layer             | Built-in                                                                                                                                | What It Gives You                                     |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Core Balancer     | Routing pipeline + fallback                                                                                                             | Stable hot path and predictable behavior              |
+| Algorithm Plugins | `rr`, `wrr`, `ch`, `p2c`, `lr`                                                                                                          | Fast balancing strategies for real traffic            |
+| Policy Plugins    | `health_gate`, `tenant_quota`, `llm_budget_gate`, `llm_kv_affinity`, `llm_session_affinity`, `llm_stage_aware`, `llm_token_aware_queue` | Health/capacity gates plus explicit affinity controls |
+| Objective Plugin  | `weighted_objective` (optional)                                                                                                         | Top-K second-pass optimization                        |
+| Telemetry         | `Sink`, `NoopSink`                                                                                                                      | Clean observability integration boundary              |
 
 ## Algorithm IDs
 
@@ -82,12 +82,11 @@ Core route benchmarks:
 
 Failure-path benchmarks:
 
-| Benchmark                                              | ns/op | B/op | allocs/op |
-| ------------------------------------------------------ | ----: | ---: | --------: |
-| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes`   | 98.72 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_no_model_available` | 112.8 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_empty_candidates`   |  2871 |   56 |         2 |
-| `BenchmarkRouteFailurePaths/serial_algorithm_error`    |  2919 |  168 |         6 |
+| Benchmark                                            | ns/op | B/op | allocs/op |
+| ---------------------------------------------------- | ----: | ---: | --------: |
+| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes` | 98.72 |    0 |         0 |
+| `BenchmarkRouteFailurePaths/serial_empty_candidates` |  2871 |   56 |         2 |
+| `BenchmarkRouteFailurePaths/serial_algorithm_error`  |  2919 |  168 |         6 |
 
 Selected component benchmarks:
 
@@ -181,28 +180,24 @@ func main() {
 		TenantID:   "team-a",
 		SessionID:  "session-a",
 		RouteClass: types.RouteGeneric,
-		Model:      "model-a",
 	}
-	modelASet := types.NewModelCapabilitySet(map[string]bool{"model-a": true})
 
 	nodes := []types.NodeSnapshot{
 		{
-			NodeID:          "node-a",
-			Healthy:         true,
-			Inflight:        10,
-			QueueDepth:      5,
-			P95LatencyMs:    30,
-			ErrorRate:       0.02,
-			ModelCapability: modelASet,
+			NodeID:       "node-a",
+			Healthy:      true,
+			Inflight:     10,
+			QueueDepth:   5,
+			P95LatencyMs: 30,
+			ErrorRate:    0.02,
 		},
 		{
-			NodeID:          "node-b",
-			Healthy:         true,
-			Inflight:        3,
-			QueueDepth:      1,
-			P95LatencyMs:    18,
-			ErrorRate:       0.01,
-			ModelCapability: modelASet,
+			NodeID:       "node-b",
+			Healthy:      true,
+			Inflight:     3,
+			QueueDepth:   1,
+			P95LatencyMs: 18,
+			ErrorRate:    0.01,
 		},
 	}
 
@@ -235,7 +230,7 @@ Examples overview:
 
 ## Reliability by Design
 
-- **Filter-first guarantees**: unhealthy nodes or unavailable model routes fail fast with typed errors.
+- **Filter-first guarantees**: unhealthy nodes fail fast with typed errors.
 - **Policy-safe routing**: policy failures or empty policy outputs trigger fallback.
 - **Objective-safe routing**: objective timeout/failure degrades to policy-ranked candidate.
 - **Telemetry-safe execution**: telemetry callback panic never breaks routing.
@@ -244,7 +239,6 @@ Common typed errors:
 
 - `ErrInvalidConfig`
 - `ErrNoHealthyNodes`
-- `ErrNoModelAvailable`
 - `ErrNoCandidate`
 - `ErrPluginTimeout`
 
@@ -263,9 +257,16 @@ Frequently used options:
 - `WithSnapshotTTLGuard(enabled bool)`
 - `WithTelemetrySink(s telemetry.Sink)`
 
-Default policy chain (LLM-aware by default):
+Default policy chain (capacity/health-first):
 
-- `health_gate -> tenant_quota -> llm_token_aware_queue -> llm_stage_aware -> llm_kv_affinity`
+- `health_gate -> tenant_quota -> llm_budget_gate`
+
+Explicit semantic / affinity policies (opt-in only):
+
+- `llm_token_aware_queue`
+- `llm_stage_aware`
+- `llm_kv_affinity`
+- `llm_session_affinity`
 
 Objective guard tuning notes:
 
@@ -291,7 +292,7 @@ Validation includes:
 - route class legality and algorithm binding completeness
 - fallback chain legality
 - BPS weight bounds and per-route-class weight sum
-- required LLM metrics (`ttft`, `tpot`, `kv_hit`)
+- required LLM metrics (`ttft`, `tpot`)
 - aggregated multi-error return via `errors.Join`
 
 Optional input boundary checks:

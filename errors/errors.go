@@ -10,8 +10,6 @@ var (
 	ErrInvalidConfig = errors.New("invalid config")
 	// ErrNoHealthyNodes 表示无健康节点可用。
 	ErrNoHealthyNodes = errors.New("no healthy nodes")
-	// ErrNoModelAvailable 表示所有节点都不可提供目标模型。
-	ErrNoModelAvailable = errors.New("model not available on any node")
 	// ErrNoCandidate 表示无可用候选节点。
 	ErrNoCandidate = errors.New("no route candidate")
 	// ErrPluginTimeout 表示插件执行超时。

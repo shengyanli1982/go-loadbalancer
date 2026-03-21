@@ -7,15 +7,9 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
-// BenchmarkSelectCandidates 基准测试 ch 选点性能。
 func BenchmarkSelectCandidates(b *testing.B) {
 	plugin := &Plugin{}
-	req := types.RequestContext{
-		SessionID:  "session-a",
-		TenantID:   "tenant-a",
-		Model:      "model-a",
-		RouteClass: types.RouteGeneric,
-	}
+	req := types.RequestContext{SessionID: "session-a"}
 	cases := []struct {
 		name      string
 		nodeCount int
