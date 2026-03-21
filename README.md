@@ -18,6 +18,8 @@ Start with a default config and built-in plugins. Then evolve toward advanced LL
 
 This is an SDK routing decision library, and upstream probing should be implemented by external systems, which then update each node's state.
 
+The balancer itself only applies health filtering and optional snapshot freshness guards. Higher-level routing semantics stay in request state, node state, and plugins instead of any built-in per-model capability gate.
+
 ## Why Teams Choose A2X
 
 - **One core, multiple traffic classes**: `generic`, `llm-prefill`, `llm-decode`.
@@ -280,10 +282,24 @@ Request-level KV affinity hint:
 - value format: node id list split by comma / semicolon / whitespace, e.g. `node-a,node-b`
 - effect: hinted nodes are prioritized before global `KVCacheHitRate` sorting for `llm-prefill` and `llm-decode`.
 
+Session affinity storage boundary:
+
+- decode session affinity now uses an internal `AffinityStore` boundary instead of a hard-coded map.
+- the default implementation remains process-local memory and preserves current behavior.
+- TTL and delete semantics are explicit at the store interface, leaving room for future shared implementations.
+
 Snapshot freshness contract:
 
 - `types.NodeSnapshot.FreshnessTTLms > 0`: snapshot is fresh and eligible for routing.
 - `types.NodeSnapshot.FreshnessTTLms <= 0`: snapshot is stale and can be filtered when `WithSnapshotTTLGuard(true)` is enabled.
+
+Snapshot state contract:
+
+- `types.NodeSnapshot.ObservedAt`: optional observation timestamp from the upstream state producer.
+- `types.NodeSnapshot.Version`: optional snapshot version string; when set, it must already be trimmed.
+- `types.NodeSnapshot.Source`: optional producer identifier; when set, it must already be trimmed.
+- `types.NodeSnapshot.CooldownUntil`: optional cooldown deadline; when both timestamps are set, it must not be earlier than `ObservedAt`.
+- `types.NodeSnapshot.OutlierReason`: optional lightweight explanation for degraded nodes; when set, it must already be trimmed.
 
 Validation includes:
 

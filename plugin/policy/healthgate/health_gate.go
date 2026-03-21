@@ -21,6 +21,10 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+func (Plugin) PolicyRole() policy.Role {
+	return policy.RoleGuard
+}
+
 // ReRank 过滤掉不健康节点并保持剩余候选相对顺序。
 func (Plugin) ReRank(_ types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	filtered := candidates[:0]
@@ -39,3 +43,4 @@ func (Plugin) ReRank(_ types.RequestContext, candidates []types.Candidate) ([]ty
 }
 
 var _ policy.Plugin = Plugin{}
+var _ policy.RoleAwarePlugin = Plugin{}

@@ -31,6 +31,10 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+func (Plugin) PolicyRole() policy.Role {
+	return policy.RoleGuard
+}
+
 // IsHardConstraint 标记 tenant_quota 为硬约束策略，回退链不可绕过。
 func (Plugin) IsHardConstraint() bool {
 	return true
@@ -103,3 +107,4 @@ func parseQuota(metadata map[string]string) (maxInflight, maxQueue int, enabled 
 }
 
 var _ policy.Plugin = Plugin{}
+var _ policy.RoleAwarePlugin = Plugin{}

@@ -28,6 +28,10 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+func (Plugin) PolicyRole() policy.Role {
+	return policy.RoleGuard
+}
+
 func (Plugin) IsHardConstraint() bool {
 	return true
 }
@@ -78,3 +82,4 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 
 var _ policy.Plugin = Plugin{}
 var _ policy.HardConstraintPlugin = Plugin{}
+var _ policy.RoleAwarePlugin = Plugin{}

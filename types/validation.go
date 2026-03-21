@@ -3,6 +3,7 @@ package types
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/go-playground/validator/v10"
 )
@@ -71,7 +72,26 @@ func (n NodeSnapshot) Validate() error {
 		TTFTMs:         n.TTFTms,
 		TPOTMs:         n.TPOTms,
 	}
-	return validateInput(view, mapNodeValidationError)
+	errs := make([]error, 0, 4)
+	if err := validateInput(view, mapNodeValidationError); err != nil {
+		errs = append(errs, err)
+	}
+	if n.Version != strings.TrimSpace(n.Version) {
+		errs = append(errs, &ValidationError{Field: "version", Value: n.Version, Constraint: "must not have leading or trailing whitespace"})
+	}
+	if n.Source != strings.TrimSpace(n.Source) {
+		errs = append(errs, &ValidationError{Field: "source", Value: n.Source, Constraint: "must not have leading or trailing whitespace"})
+	}
+	if n.OutlierReason != strings.TrimSpace(n.OutlierReason) {
+		errs = append(errs, &ValidationError{Field: "outlier_reason", Value: n.OutlierReason, Constraint: "must not have leading or trailing whitespace"})
+	}
+	if !n.CooldownUntil.IsZero() && !n.ObservedAt.IsZero() && n.CooldownUntil.Before(n.ObservedAt) {
+		errs = append(errs, &ValidationError{Field: "cooldown_until", Value: n.CooldownUntil, Constraint: "must be >= observed_at when both are set"})
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
 }
 
 func validateInput(view any, mapper func(validator.FieldError) error) error {

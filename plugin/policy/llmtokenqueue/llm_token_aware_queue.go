@@ -31,6 +31,10 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+func (Plugin) PolicyRole() policy.Role {
+	return policy.RoleRerank
+}
+
 // ReRank 根据请求 token 规模在公平性与吞吐之间做折中重排。
 func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	if len(candidates) == 0 {
@@ -76,3 +80,4 @@ func score(node types.NodeSnapshot, shortRequest bool) float64 {
 }
 
 var _ policy.Plugin = Plugin{}
+var _ policy.RoleAwarePlugin = Plugin{}

@@ -29,6 +29,10 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+func (Plugin) PolicyRole() policy.Role {
+	return policy.RoleRerank
+}
+
 // ReRank 根据 LLM 阶段优先不同指标做重排。
 func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	if len(candidates) == 0 {
@@ -79,3 +83,4 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 }
 
 var _ policy.Plugin = Plugin{}
+var _ policy.RoleAwarePlugin = Plugin{}

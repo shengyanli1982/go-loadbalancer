@@ -1,5 +1,7 @@
 package types
 
+import "time"
+
 // RouteClass identifies request classes.
 type RouteClass string
 
@@ -26,11 +28,16 @@ type RequestContext struct {
 	Metadata             map[string]string
 }
 
-// NodeSnapshot carries per-node runtime metrics.
+// NodeSnapshot carries per-node runtime metrics and externally supplied state metadata.
 type NodeSnapshot struct {
 	NodeID         string
 	Region         string
 	Pool           string
+	ObservedAt     time.Time
+	Version        string
+	Source         string
+	CooldownUntil  time.Time
+	OutlierReason  string
 	Healthy        bool
 	Outlier        bool
 	FreshnessTTLms int64

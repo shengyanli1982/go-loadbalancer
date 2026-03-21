@@ -32,6 +32,10 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+func (Plugin) PolicyRole() policy.Role {
+	return policy.RoleAffinity
+}
+
 // ReRank 对 LLM 路由按 KV 命中率优先重排。
 func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	if len(candidates) == 0 {
@@ -110,3 +114,4 @@ func parsePreferredNodes(metadata map[string]string) map[string]bool {
 }
 
 var _ policy.Plugin = Plugin{}
+var _ policy.RoleAwarePlugin = Plugin{}

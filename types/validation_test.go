@@ -3,6 +3,7 @@ package types
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,8 +47,15 @@ func TestRequestContextValidateInvalid(t *testing.T) {
 
 // TestNodeSnapshotValidateSuccess 验证合法节点快照通过校验。
 func TestNodeSnapshotValidateSuccess(t *testing.T) {
+	observedAt := time.Unix(1700000000, 0).UTC()
+	cooldownUntil := observedAt.Add(30 * time.Second)
 	node := NodeSnapshot{
 		NodeID:         "n1",
+		ObservedAt:     observedAt,
+		Version:        "snapshot-1",
+		Source:         "probe-agent",
+		CooldownUntil:  cooldownUntil,
+		OutlierReason:  "recent_error_spike",
 		StaticWeight:   0,
 		Inflight:       1,
 		QueueDepth:     2,
@@ -65,8 +73,14 @@ func TestNodeSnapshotValidateSuccess(t *testing.T) {
 
 // TestNodeSnapshotValidateInvalid 验证非法节点快照返回字段级错误。
 func TestNodeSnapshotValidateInvalid(t *testing.T) {
+	observedAt := time.Unix(1700000000, 0).UTC()
 	node := NodeSnapshot{
 		NodeID:         "",
+		ObservedAt:     observedAt,
+		Version:        " snapshot-1 ",
+		Source:         "  probe-agent",
+		CooldownUntil:  observedAt.Add(-time.Second),
+		OutlierReason:  " recent_error_spike ",
 		StaticWeight:   -1,
 		Inflight:       -1,
 		QueueDepth:     -1,
@@ -85,6 +99,10 @@ func TestNodeSnapshotValidateInvalid(t *testing.T) {
 
 	validationErrs := flattenValidationErrors(err)
 	assert.True(t, hasValidationField(validationErrs, "node_id"))
+	assert.True(t, hasValidationField(validationErrs, "version"))
+	assert.True(t, hasValidationField(validationErrs, "source"))
+	assert.True(t, hasValidationField(validationErrs, "cooldown_until"))
+	assert.True(t, hasValidationField(validationErrs, "outlier_reason"))
 	assert.True(t, hasValidationField(validationErrs, "static_weight"))
 	assert.True(t, hasValidationField(validationErrs, "inflight"))
 	assert.True(t, hasValidationField(validationErrs, "queue_depth"))

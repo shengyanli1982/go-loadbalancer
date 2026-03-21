@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/shengyanli1982/go-loadbalancer/config"
@@ -35,7 +34,7 @@ const (
 	reasonSelectedByPolicyRanked = "selected_by=policy_ranked"
 	reasonFallbackPolicyRanked   = "fallback=policy_ranked"
 	reasonFallbackPrefix         = "fallback="
-	reasonCauseFormat            = "cause=%v"
+	reasonCauseFormat            = "cause=%s"
 
 	defaultObjectiveMaxConcurrent = 128
 )
@@ -55,8 +54,7 @@ type a2xBalancer struct {
 	routePolicies       map[types.RouteClass][]policyplugin.Plugin
 	routeHardPolicies   map[types.RouteClass][]policyplugin.Plugin
 	routeFallbackChains map[types.RouteClass][]string
-	sessionAffinity     map[string]string
-	sessionAffinityMu   sync.RWMutex
+	sessionAffinity     AffinityStore
 	objectivePlugin     objectiveplugin.Plugin
 	objectiveLimiter    chan struct{}
 	fallbackAlgorithms  map[string]algorithmplugin.Plugin
@@ -219,7 +217,7 @@ func New(cfg config.Config, opts ...config.Option) (Balancer, error) {
 		routePolicies:       routePolicies,
 		routeHardPolicies:   routeHardPolicies,
 		routeFallbackChains: routeFallbackChains,
-		sessionAffinity:     make(map[string]string),
+		sessionAffinity:     newMemoryAffinityStore(),
 		objectivePlugin:     objectivePlugin,
 		objectiveLimiter:    objectiveLimiter,
 		fallbackAlgorithms:  fallbackAlgorithms,
@@ -282,8 +280,8 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 		})
 	}
 
-	// 第一步：先做硬约束过滤（健康状态、模型可用性）。
-	// 过滤出健康且支持目标模型的节点。
+	// 第一步：先做基础过滤（健康状态、可选的快照新鲜度约束）。
+	// 过滤出健康且满足当前快照约束的节点。
 	filtered, filterErr := filterNodes(req, routingNodes, b.cfg.SnapshotTTLGuard)
 	if filterErr != nil {
 		if b.telemetryEnabled {
@@ -306,9 +304,9 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 
 	// 第二步：算法层给出候选集；候选为空或出错都进入回退链。
 	// 调用算法插件从过滤后的节点中选出 TopK 个候选。
-	candidates, err := algorithmPlugin.SelectCandidates(req, filtered, b.cfg.TopK)
+	candidates, err := selectCandidatesWithOptionalContext(ctx, algorithmPlugin, req, filtered, b.cfg.TopK)
 	if err != nil {
-		candidate, fbErr := b.fallback(ctx, req, filtered, nil, errors.Join(err, lberrors.ErrNoCandidate))
+		candidate, fbErr := b.fallback(ctx, req, filtered, nil, types.NewFailureCause(types.FailureReasonAlgorithmError, err))
 		if fbErr != nil {
 			return types.Candidate{}, errors.Join(err, fbErr)
 		}
@@ -316,7 +314,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 		return candidate, nil
 	}
 	if len(candidates) == 0 {
-		candidate, fbErr := b.fallback(ctx, req, filtered, nil, lberrors.ErrNoCandidate)
+		candidate, fbErr := b.fallback(ctx, req, filtered, nil, types.NewFailureCause(types.FailureReasonNoCandidate, lberrors.ErrNoCandidate))
 		if fbErr != nil {
 			return types.Candidate{}, fbErr
 		}
@@ -328,7 +326,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 	// 第三步：策略层按顺序重排，任何策略失败都触发回退。
 	// 依次应用所有策略插件对候选进行重排。
 	for _, policyPlugin := range b.routePolicies[req.RouteClass] {
-		nextRanked, policyErr := policyPlugin.ReRank(req, ranked)
+		nextRanked, policyErr := rerankWithOptionalContext(ctx, policyPlugin, req, ranked)
 		if policyErr != nil || len(nextRanked) == 0 {
 			baseErr := policyErr
 			if baseErr == nil {
@@ -341,14 +339,14 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 						RouteClass: string(req.RouteClass),
 						Stage:      stagePolicy,
 						Outcome:    outcomeFailed,
-						Reason:     baseErr.Error(),
+						Reason:     fmt.Sprintf("role=%s %s", policyRole(policyPlugin), baseErr.Error()),
 						Plugin:     policyPlugin.Name(),
 						DurationMs: sinceMs(started),
 					})
 				}
 				return types.Candidate{}, baseErr
 			}
-			candidate, fbErr := b.fallback(ctx, req, filtered, ranked, baseErr)
+			candidate, fbErr := b.fallback(ctx, req, filtered, ranked, types.NewFailureCause(types.FailureReasonPolicyReject, baseErr))
 			if fbErr != nil {
 				return types.Candidate{}, errors.Join(baseErr, fbErr)
 			}
@@ -390,7 +388,11 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 				DurationMs:           sinceMs(started),
 			})
 		}
-		candidate, fbErr := b.fallback(ctx, req, filtered, ranked, objectiveErr)
+		failureReason := types.FailureReasonObjectiveError
+		if errors.Is(objectiveErr, lberrors.ErrPluginTimeout) {
+			failureReason = types.FailureReasonObjectiveTimeout
+		}
+		candidate, fbErr := b.fallback(ctx, req, filtered, ranked, types.NewFailureCause(failureReason, objectiveErr))
 		if fbErr != nil {
 			return types.Candidate{}, errors.Join(objectiveErr, fbErr)
 		}
@@ -482,7 +484,7 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 }
 
 // fallback 按配置的回退链依次尝试生成可用候选。
-func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, filtered []types.NodeSnapshot, ranked []types.Candidate, cause error) (types.Candidate, error) {
+func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, filtered []types.NodeSnapshot, ranked []types.Candidate, cause types.FailureCause) (types.Candidate, error) {
 	// 回退链允许混合使用 policy_ranked 和算法名，按配置顺序逐个尝试。
 	// 依次尝试回退链中的每个策略或算法。
 	chain := b.routeFallbackChains[req.RouteClass]
@@ -497,14 +499,14 @@ func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, fi
 				continue
 			}
 			candidate := ranked[0]
-			candidate, allowed, hardErr := b.enforceHardPolicies(req, candidate)
+			candidate, allowed, hardErr := b.enforceHardPolicies(ctx, req, candidate)
 			if hardErr != nil {
 				return types.Candidate{}, hardErr
 			}
 			if !allowed {
 				continue
 			}
-			candidate.Reason = append(candidate.Reason, reasonFallbackPolicyRanked, fmt.Sprintf(reasonCauseFormat, cause))
+			candidate.Reason = append(candidate.Reason, reasonFallbackPolicyRanked, fmt.Sprintf(reasonCauseFormat, cause.Reason))
 			if b.telemetryEnabled {
 				b.emit(telemetry.TelemetryEvent{
 					Type:       telemetry.EventRouteFallback,
@@ -528,20 +530,20 @@ func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, fi
 			if topK > len(filtered) {
 				topK = len(filtered)
 			}
-			candidates, err := plugin.SelectCandidates(req, filtered, topK)
+			candidates, err := selectCandidatesWithOptionalContext(ctx, plugin, req, filtered, topK)
 			if err != nil || len(candidates) == 0 {
 				continue
 			}
 
 			for _, candidate := range candidates {
-				candidate, allowed, hardErr := b.enforceHardPolicies(req, candidate)
+				candidate, allowed, hardErr := b.enforceHardPolicies(ctx, req, candidate)
 				if hardErr != nil {
 					return types.Candidate{}, hardErr
 				}
 				if !allowed {
 					continue
 				}
-				candidate.Reason = append(candidate.Reason, reasonFallbackPrefix+step, fmt.Sprintf(reasonCauseFormat, cause))
+				candidate.Reason = append(candidate.Reason, reasonFallbackPrefix+step, fmt.Sprintf(reasonCauseFormat, cause.Reason))
 				if b.telemetryEnabled {
 					b.emit(telemetry.TelemetryEvent{
 						Type:       telemetry.EventRouteFallback,
@@ -628,9 +630,7 @@ func (b *a2xBalancer) applySessionAffinityHint(req types.RequestContext) types.R
 		return req
 	}
 
-	b.sessionAffinityMu.RLock()
-	nodeID, ok := b.sessionAffinity[req.SessionID]
-	b.sessionAffinityMu.RUnlock()
+	nodeID, ok := b.sessionAffinity.Get(req.SessionID)
 	if !ok || strings.TrimSpace(nodeID) == "" {
 		return req
 	}
@@ -651,9 +651,7 @@ func (b *a2xBalancer) rememberSessionAffinity(req types.RequestContext, candidat
 	if strings.TrimSpace(candidate.Node.NodeID) == "" {
 		return
 	}
-	b.sessionAffinityMu.Lock()
-	b.sessionAffinity[req.SessionID] = candidate.Node.NodeID
-	b.sessionAffinityMu.Unlock()
+	b.sessionAffinity.Set(req.SessionID, candidate.Node.NodeID, 0)
 }
 
 func (b *a2xBalancer) applyReliabilityPilot(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.NodeSnapshot, string) {
@@ -750,7 +748,7 @@ func filterOutliers(nodes []types.NodeSnapshot) ([]types.NodeSnapshot, int) {
 	return filtered, len(nodes) - len(filtered)
 }
 
-func (b *a2xBalancer) enforceHardPolicies(req types.RequestContext, candidate types.Candidate) (types.Candidate, bool, error) {
+func (b *a2xBalancer) enforceHardPolicies(ctx context.Context, req types.RequestContext, candidate types.Candidate) (types.Candidate, bool, error) {
 	hardPolicies := b.routeHardPolicies[req.RouteClass]
 	if len(hardPolicies) == 0 {
 		return candidate, true, nil
@@ -758,7 +756,7 @@ func (b *a2xBalancer) enforceHardPolicies(req types.RequestContext, candidate ty
 
 	ranked := []types.Candidate{candidate}
 	for _, policyPlugin := range hardPolicies {
-		nextRanked, err := policyPlugin.ReRank(req, ranked)
+		nextRanked, err := rerankWithOptionalContext(ctx, policyPlugin, req, ranked)
 		if err != nil {
 			return types.Candidate{}, false, err
 		}
@@ -768,6 +766,27 @@ func (b *a2xBalancer) enforceHardPolicies(req types.RequestContext, candidate ty
 		ranked = nextRanked
 	}
 	return ranked[0], true, nil
+}
+
+func selectCandidatesWithOptionalContext(ctx context.Context, plugin algorithmplugin.Plugin, req types.RequestContext, nodes []types.NodeSnapshot, topK int) ([]types.Candidate, error) {
+	if contextual, ok := plugin.(algorithmplugin.ContextPlugin); ok {
+		return contextual.SelectCandidatesWithContext(ctx, req, nodes, topK)
+	}
+	return plugin.SelectCandidates(req, nodes, topK)
+}
+
+func rerankWithOptionalContext(ctx context.Context, plugin policyplugin.Plugin, req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
+	if contextual, ok := plugin.(policyplugin.ContextPlugin); ok {
+		return contextual.ReRankWithContext(ctx, req, candidates)
+	}
+	return plugin.ReRank(req, candidates)
+}
+
+func policyRole(plugin policyplugin.Plugin) policyplugin.Role {
+	if roleAware, ok := plugin.(policyplugin.RoleAwarePlugin); ok {
+		return roleAware.PolicyRole()
+	}
+	return policyplugin.RoleRerank
 }
 
 func safeChoose(plugin objectiveplugin.Plugin, req types.RequestContext, candidates []types.Candidate, objectiveName string) (candidate types.Candidate, err error) {

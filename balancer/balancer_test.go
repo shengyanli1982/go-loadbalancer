@@ -25,6 +25,10 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
+type routeContextKey string
+
+const routeContextMarkerKey routeContextKey = "route-marker"
+
 type slowObjective struct{}
 
 // Name 返回测试用慢目标函数的插件名。
@@ -183,6 +187,54 @@ func (p *factoryRRAlgorithm) SelectCandidates(_ types.RequestContext, nodes []ty
 	return out, nil
 }
 
+type errorAlgorithm struct{}
+
+func (errorAlgorithm) Name() string { return "error_algorithm" }
+
+func (errorAlgorithm) SelectCandidates(_ types.RequestContext, _ []types.NodeSnapshot, _ int) ([]types.Candidate, error) {
+	return nil, errors.New("algorithm exploded")
+}
+
+type contextAwareAlgorithm struct{}
+
+func (contextAwareAlgorithm) Name() string { return "ctx_algorithm" }
+
+func (contextAwareAlgorithm) SelectCandidates(_ types.RequestContext, _ []types.NodeSnapshot, _ int) ([]types.Candidate, error) {
+	return nil, errors.New("legacy algorithm path should not be used")
+}
+
+func (contextAwareAlgorithm) SelectCandidatesWithContext(ctx context.Context, _ types.RequestContext, nodes []types.NodeSnapshot, topK int) ([]types.Candidate, error) {
+	if got := ctx.Value(routeContextMarkerKey); got != "algorithm" {
+		return nil, errors.New("missing algorithm context marker")
+	}
+	if topK <= 0 || len(nodes) == 0 {
+		return nil, lberrors.ErrNoCandidate
+	}
+	return []types.Candidate{{Node: nodes[0], Reason: []string{"algorithm=context_aware"}}}, nil
+}
+
+type contextAwareHardPolicy struct{}
+
+func (contextAwareHardPolicy) Name() string { return "ctx_hard_policy" }
+
+func (contextAwareHardPolicy) ReRank(_ types.RequestContext, _ []types.Candidate) ([]types.Candidate, error) {
+	return nil, errors.New("legacy policy path should not be used")
+}
+
+func (contextAwareHardPolicy) ReRankWithContext(ctx context.Context, _ types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
+	if got := ctx.Value(routeContextMarkerKey); got != "policy" {
+		return nil, errors.New("missing policy context marker")
+	}
+	if len(candidates) == 0 {
+		return nil, lberrors.ErrNoCandidate
+	}
+	out := append([]types.Candidate(nil), candidates...)
+	out[0].Reason = append(out[0].Reason, "policy=context_aware")
+	return out, nil
+}
+
+func (contextAwareHardPolicy) IsHardConstraint() bool { return true }
+
 // TestRouteSuccess 验证基础路由成功场景。
 func TestRouteSuccess(t *testing.T) {
 	cfg := config.DefaultConfig()
@@ -198,6 +250,56 @@ func TestRouteSuccess(t *testing.T) {
 	candidate, routeErr := b.Route(context.Background(), req, nodes)
 	require.NoError(t, routeErr)
 	assert.Equal(t, "n2", candidate.Node.NodeID)
+}
+
+func TestRouteUsesContextAwareAlgorithmWhenAvailable(t *testing.T) {
+	if err := registry.RegisterAlgorithm(contextAwareAlgorithm{}); err != nil && !errors.Is(err, lberrors.ErrDuplicatePlugin) {
+		require.NoError(t, err)
+	}
+
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteGeneric, "ctx_algorithm"),
+		config.WithPolicies(config.PolicyHealthGate),
+		config.WithFallback("ctx_algorithm"),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{RouteClass: types.RouteGeneric}
+	nodes := []types.NodeSnapshot{{NodeID: "n1", Healthy: true, Inflight: 1, QueueDepth: 1}}
+
+	ctx := context.WithValue(context.Background(), routeContextMarkerKey, "algorithm")
+	candidate, routeErr := b.Route(ctx, req, nodes)
+	require.NoError(t, routeErr)
+	assert.Equal(t, "n1", candidate.Node.NodeID)
+	assert.True(t, containsReason(candidate.Reason, "algorithm=context_aware"))
+}
+
+func TestRouteUsesContextAwarePolicyWhenAvailable(t *testing.T) {
+	if err := registry.RegisterPolicy(contextAwareHardPolicy{}); err != nil && !errors.Is(err, lberrors.ErrDuplicatePlugin) {
+		require.NoError(t, err)
+	}
+
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
+		config.WithPolicies("ctx_hard_policy"),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{RouteClass: types.RouteGeneric}
+	nodes := []types.NodeSnapshot{
+		{NodeID: "n1", Healthy: true, Inflight: 2, QueueDepth: 1},
+		{NodeID: "n2", Healthy: true, Inflight: 1, QueueDepth: 1},
+	}
+
+	ctx := context.WithValue(context.Background(), routeContextMarkerKey, "policy")
+	candidate, routeErr := b.Route(ctx, req, nodes)
+	require.NoError(t, routeErr)
+	assert.Equal(t, "n2", candidate.Node.NodeID)
+	assert.True(t, containsReason(candidate.Reason, "policy=context_aware"))
 }
 
 func TestRouteStageAwarePolicyRequiresExplicitOptIn(t *testing.T) {
@@ -683,6 +785,7 @@ func TestRouteFallbackOnSoftPolicyError(t *testing.T) {
 	require.NoError(t, routeErr)
 	assert.Equal(t, "n1", candidate.Node.NodeID)
 	assert.True(t, containsReason(candidate.Reason, "fallback="))
+	assert.True(t, containsReason(candidate.Reason, "cause=policy_reject"))
 }
 
 // TestRouteFallbackOnObjectiveTimeout 验证目标函数超时会触发回退链。
@@ -706,6 +809,31 @@ func TestRouteFallbackOnObjectiveTimeout(t *testing.T) {
 	require.NoError(t, routeErr)
 	assert.Equal(t, "n1", candidate.Node.NodeID)
 	assert.True(t, containsReason(candidate.Reason, "fallback="))
+	assert.True(t, containsReason(candidate.Reason, "cause=objective_timeout"))
+}
+
+func TestRouteFallbackOnAlgorithmErrorAnnotatesFailureReason(t *testing.T) {
+	if err := registry.RegisterAlgorithm(errorAlgorithm{}); err != nil && !errors.Is(err, lberrors.ErrDuplicatePlugin) {
+		require.NoError(t, err)
+	}
+
+	cfg := config.DefaultConfig()
+	b, err := balancer.New(
+		cfg,
+		config.WithAlgorithm(types.RouteGeneric, "error_algorithm"),
+		config.WithPolicies(config.PolicyHealthGate),
+		config.WithFallback(config.AlgorithmLeastRequest),
+	)
+	require.NoError(t, err)
+
+	req := types.RequestContext{RouteClass: types.RouteGeneric}
+	nodes := []types.NodeSnapshot{{NodeID: "n1", Healthy: true, Inflight: 1, QueueDepth: 1}}
+
+	candidate, routeErr := b.Route(context.Background(), req, nodes)
+	require.NoError(t, routeErr)
+	assert.Equal(t, "n1", candidate.Node.NodeID)
+	assert.True(t, containsReason(candidate.Reason, "fallback=lr"))
+	assert.True(t, containsReason(candidate.Reason, "cause=algorithm_error"))
 }
 
 func TestRouteObjectiveTimeoutTierForPrefill(t *testing.T) {
