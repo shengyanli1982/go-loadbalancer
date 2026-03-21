@@ -7,6 +7,7 @@
 ![Architecture](https://img.shields.io/badge/Architecture-A2X-2E86DE)
 ![Tests](https://img.shields.io/badge/Tests-16%20passing-success)
 ![Race Support](https://img.shields.io/badge/Race%20Test-Windows%20Friendly-brightgreen)
+[![Go Reference](https://pkg.go.dev/badge/github.com/shengyanli1982/go-loadbalancer.svg)](https://pkg.go.dev/github.com/shengyanli1982/go-loadbalancer)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/shengyanli1982/go-loadbalancer)
 
 `go-loadbalancer` is a production-oriented routing library for teams that need stable load balancing today and safe strategy evolution tomorrow.
@@ -16,6 +17,8 @@ Start with a default config and built-in plugins. Then evolve toward advanced LL
 ## Responsibility Boundary
 
 This is an SDK routing decision library, and upstream probing should be implemented by external systems, which then update each node's state.
+
+The balancer itself only applies health filtering and optional snapshot freshness guards. Higher-level routing semantics stay in request state, node state, and plugins instead of any built-in per-model capability gate.
 
 ## Why Teams Choose A2X
 
@@ -35,13 +38,13 @@ A2X is built for:
 
 ## Capability Portfolio
 
-| Layer             | Built-in                                                                                     | What It Gives You                          |
-| ----------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Core Balancer     | Routing pipeline + fallback                                                                  | Stable hot path and predictable behavior   |
-| Algorithm Plugins | `rr`, `wrr`, `ch`, `p2c`, `lr`                                                               | Fast balancing strategies for real traffic |
-| Policy Plugins    | `health_gate`, `tenant_quota`, `llm_kv_affinity`, `llm_stage_aware`, `llm_token_aware_queue` | Hard constraints before final pick         |
-| Objective Plugin  | `weighted_objective` (optional)                                                              | Top-K second-pass optimization             |
-| Telemetry         | `Sink`, `NoopSink`                                                                           | Clean observability integration boundary   |
+| Layer             | Built-in                                                                                                                                | What It Gives You                                     |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Core Balancer     | Routing pipeline + fallback                                                                                                             | Stable hot path and predictable behavior              |
+| Algorithm Plugins | `rr`, `wrr`, `ch`, `p2c`, `lr`                                                                                                          | Fast balancing strategies for real traffic            |
+| Policy Plugins    | `health_gate`, `tenant_quota`, `llm_budget_gate`, `llm_kv_affinity`, `llm_session_affinity`, `llm_stage_aware`, `llm_token_aware_queue` | Health/capacity gates plus explicit affinity controls |
+| Objective Plugin  | `weighted_objective` (optional)                                                                                                         | Top-K second-pass optimization                        |
+| Telemetry         | `Sink`, `NoopSink`                                                                                                                      | Clean observability integration boundary              |
 
 ## Algorithm IDs
 
@@ -61,46 +64,45 @@ We use short algorithm IDs in config for product readability:
 go test -run ^$ -bench . -benchmem ./balancer ./plugin/algorithm/rr ./plugin/algorithm/wrr ./plugin/algorithm/consistenthash ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest ./plugin/objective/weighted ./registry
 ```
 
-Benchmark environment (measured on 2026-03-14):
+Benchmark environment (measured on 2026-03-20):
 
 - Go `1.24.13`
 - OS/Arch: `windows/amd64`
-- CPU: `12th Gen Intel(R) Core(TM) i5-12400F`
+- CPU: `Intel(R) Core(TM) 5 210H`
 
 Core route benchmarks:
 
 | Benchmark                                                | ns/op | B/op | allocs/op |
 | -------------------------------------------------------- | ----: | ---: | --------: |
-| `BenchmarkRoute/serial_nodes_32`                         | 663.7 | 2032 |         4 |
-| `BenchmarkRoute/serial_nodes_256`                        |  1751 | 2032 |         4 |
-| `BenchmarkRoute/serial_nodes_1024`                       |  5034 | 2032 |         4 |
-| `BenchmarkRoute/parallel_nodes_256`                      | 602.8 | 2032 |         4 |
-| `BenchmarkRoute/serial_default_config_nodes_256`         |  2175 | 2016 |         9 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |  3858 | 2888 |        11 |
-| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |  1922 | 2057 |         5 |
+| `BenchmarkRoute/serial_nodes_32`                         | 659.6 | 1392 |         3 |
+| `BenchmarkRoute/serial_nodes_256`                        |  1601 | 1392 |         3 |
+| `BenchmarkRoute/serial_nodes_1024`                       |  5163 | 1392 |         3 |
+| `BenchmarkRoute/parallel_nodes_256`                      | 601.4 | 1392 |         3 |
+| `BenchmarkRoute/serial_default_config_nodes_256`         |  2615 | 1952 |         3 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |  9694 | 2776 |        17 |
+| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |  6869 | 1417 |         4 |
 
 Failure-path benchmarks:
 
-| Benchmark                                              | ns/op | B/op | allocs/op |
-| ------------------------------------------------------ | ----: | ---: | --------: |
-| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes`   | 22.23 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_no_model_available` | 21.80 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_empty_candidates`   | 903.3 |   56 |         2 |
-| `BenchmarkRouteFailurePaths/serial_algorithm_error`    |  1046 |  168 |         6 |
+| Benchmark                                            | ns/op | B/op | allocs/op |
+| ---------------------------------------------------- | ----: | ---: | --------: |
+| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes` | 98.72 |    0 |         0 |
+| `BenchmarkRouteFailurePaths/serial_empty_candidates` |  2871 |   56 |         2 |
+| `BenchmarkRouteFailurePaths/serial_algorithm_error`  |  2919 |  168 |         6 |
 
 Selected component benchmarks:
 
 | Benchmark                                             | ns/op | B/op | allocs/op |
 | ----------------------------------------------------- | ----: | ---: | --------: |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`)  | 367.7 | 1792 |         2 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`) |  4060 | 1792 |         2 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`)  |  3091 | 1920 |         3 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`) |  4045 | 1856 |         3 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`)  |  2622 | 2112 |         3 |
-| `BenchmarkChoose` (`plugin/objective/weighted`)       | 375.0 |   16 |         1 |
-| `BenchmarkManagerGetAlgorithm/hit_serial`             | 21.93 |    0 |         0 |
-| `BenchmarkManagerHasAlgorithm/hit_serial`             | 16.75 |    0 |         0 |
-| `BenchmarkManagerRegisterAlgorithmParallel`           | 484.7 |  163 |         1 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`)  | 496.4 | 2048 |         2 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`) |  4285 | 2048 |         2 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`)  |  3212 | 2176 |         3 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`) |  4217 | 3264 |         3 |
+| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`)  |  2266 | 2368 |         3 |
+| `BenchmarkChoose` (`plugin/objective/weighted`)       | 540.0 |   16 |         1 |
+| `BenchmarkManagerGetAlgorithm/hit_serial`             | 15.83 |    0 |         0 |
+| `BenchmarkManagerHasAlgorithm/hit_serial`             | 16.20 |    0 |         0 |
+| `BenchmarkManagerRegisterAlgorithmParallel`           | 416.5 |  152 |         1 |
 
 Algorithm deep-dive benchmark command:
 
@@ -116,7 +118,7 @@ Objective guard benchmark command:
 go test -run ^$ -bench "BenchmarkRoute/(serial_nodes_256|serial_default_config_nodes_256|serial_objective_enabled_nodes_256|parallel_objective_guard_max_concurrent_1_nodes_256|parallel_objective_guard_max_concurrent_64_nodes_256)$|BenchmarkRouteObjectiveGuardLatency/(max_concurrent_1_nodes_256|max_concurrent_64_nodes_256)$" -benchmem -benchtime=2s -count=1 ./balancer
 ```
 
-Objective guard benchmark environment (measured on 2026-03-18):
+Objective guard benchmark environment (measured on 2026-03-20):
 
 - Go `1.24.13`
 - OS/Arch: `windows/amd64`
@@ -124,21 +126,21 @@ Objective guard benchmark environment (measured on 2026-03-18):
 
 Objective guard benchmark results:
 
-| Benchmark                                                             |  ns/op | req/s | p95 (ms) | p99 (ms) | B/op | allocs/op |
-| --------------------------------------------------------------------- | -----: | ----: | -------: | -------: | ---: | --------: |
-| `BenchmarkRoute/serial_nodes_256`                                     |   2180 |   N/A |      N/A |      N/A | 1392 |         3 |
-| `BenchmarkRoute/serial_default_config_nodes_256`                      |   3979 |   N/A |      N/A |      N/A | 5248 |        16 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`                   |   5123 |   N/A |      N/A |      N/A | 2680 |        16 |
-| `BenchmarkRoute/parallel_objective_guard_max_concurrent_1_nodes_256`  | 616182 |   N/A |      N/A |      N/A | 2649 |        16 |
-| `BenchmarkRoute/parallel_objective_guard_max_concurrent_64_nodes_256` |  52409 |   N/A |      N/A |      N/A | 2648 |        16 |
-| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_1_nodes_256`      | 630585 |  1585 |    9.471 |    11.56 | 2649 |        16 |
-| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_64_nodes_256`     |  52822 | 18926 |    1.001 |    1.259 | 2648 |        16 |
+| Benchmark                                                             |   ns/op | req/s | p95 (ms) | p99 (ms) | B/op | allocs/op |
+| --------------------------------------------------------------------- | ------: | ----: | -------: | -------: | ---: | --------: |
+| `BenchmarkRoute/serial_nodes_256`                                     |    1659 |   N/A |      N/A |      N/A | 1392 |         3 |
+| `BenchmarkRoute/serial_default_config_nodes_256`                      |    3086 |   N/A |      N/A |      N/A | 1952 |         3 |
+| `BenchmarkRoute/serial_objective_enabled_nodes_256`                   |    9991 |   N/A |      N/A |      N/A | 2776 |        17 |
+| `BenchmarkRoute/parallel_objective_guard_max_concurrent_1_nodes_256`  | 1018754 |   N/A |      N/A |      N/A | 2744 |        17 |
+| `BenchmarkRoute/parallel_objective_guard_max_concurrent_64_nodes_256` |   82056 |   N/A |      N/A |      N/A | 2744 |        17 |
+| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_1_nodes_256`      |  863215 |  1158 |    22.41 |    37.70 | 2746 |        17 |
+| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_64_nodes_256`     |   57668 | 17322 |    1.277 |    2.911 | 2744 |        17 |
 
 Observed deltas from this run:
 
-- objective enabled (serial): `5123 ns/op` vs `3979 ns/op` (default config), +28.7% hot-path cost in this synthetic setup.
-- parallel throughput (guard 64 vs guard 1): `18926 req/s` vs `1585 req/s`, about `11.9x` improvement.
-- tail latency (guard 64 vs guard 1): p95 `1.001 ms` vs `9.471 ms`, about `89.4%` lower; p99 `1.259 ms` vs `11.56 ms`, about `89.1%` lower.
+- objective enabled (serial): `9991 ns/op` vs `3086 ns/op` (default config), +223.8% hot-path cost in this synthetic setup.
+- parallel throughput (guard 64 vs guard 1): `17322 req/s` vs `1158 req/s`, about `15.0x` improvement.
+- tail latency (guard 64 vs guard 1): p95 `1.277 ms` vs `22.41 ms`, about `94.3%` lower; p99 `2.911 ms` vs `37.70 ms`, about `92.3%` lower.
 
 ## Quick Start
 
@@ -180,28 +182,24 @@ func main() {
 		TenantID:   "team-a",
 		SessionID:  "session-a",
 		RouteClass: types.RouteGeneric,
-		Model:      "model-a",
 	}
-	modelASet := types.NewModelCapabilitySet(map[string]bool{"model-a": true})
 
 	nodes := []types.NodeSnapshot{
 		{
-			NodeID:          "node-a",
-			Healthy:         true,
-			Inflight:        10,
-			QueueDepth:      5,
-			P95LatencyMs:    30,
-			ErrorRate:       0.02,
-			ModelCapability: modelASet,
+			NodeID:       "node-a",
+			Healthy:      true,
+			Inflight:     10,
+			QueueDepth:   5,
+			P95LatencyMs: 30,
+			ErrorRate:    0.02,
 		},
 		{
-			NodeID:          "node-b",
-			Healthy:         true,
-			Inflight:        3,
-			QueueDepth:      1,
-			P95LatencyMs:    18,
-			ErrorRate:       0.01,
-			ModelCapability: modelASet,
+			NodeID:       "node-b",
+			Healthy:      true,
+			Inflight:     3,
+			QueueDepth:   1,
+			P95LatencyMs: 18,
+			ErrorRate:    0.01,
 		},
 	}
 
@@ -234,7 +232,7 @@ Examples overview:
 
 ## Reliability by Design
 
-- **Filter-first guarantees**: unhealthy nodes or unavailable model routes fail fast with typed errors.
+- **Filter-first guarantees**: unhealthy nodes fail fast with typed errors.
 - **Policy-safe routing**: policy failures or empty policy outputs trigger fallback.
 - **Objective-safe routing**: objective timeout/failure degrades to policy-ranked candidate.
 - **Telemetry-safe execution**: telemetry callback panic never breaks routing.
@@ -243,7 +241,6 @@ Common typed errors:
 
 - `ErrInvalidConfig`
 - `ErrNoHealthyNodes`
-- `ErrNoModelAvailable`
 - `ErrNoCandidate`
 - `ErrPluginTimeout`
 
@@ -262,9 +259,16 @@ Frequently used options:
 - `WithSnapshotTTLGuard(enabled bool)`
 - `WithTelemetrySink(s telemetry.Sink)`
 
-Default policy chain (LLM-aware by default):
+Default policy chain (capacity/health-first):
 
-- `health_gate -> tenant_quota -> llm_token_aware_queue -> llm_stage_aware -> llm_kv_affinity`
+- `health_gate -> tenant_quota -> llm_budget_gate`
+
+Explicit semantic / affinity policies (opt-in only):
+
+- `llm_token_aware_queue`
+- `llm_stage_aware`
+- `llm_kv_affinity`
+- `llm_session_affinity`
 
 Objective guard tuning notes:
 
@@ -278,10 +282,24 @@ Request-level KV affinity hint:
 - value format: node id list split by comma / semicolon / whitespace, e.g. `node-a,node-b`
 - effect: hinted nodes are prioritized before global `KVCacheHitRate` sorting for `llm-prefill` and `llm-decode`.
 
+Session affinity storage boundary:
+
+- decode session affinity now uses an internal `AffinityStore` boundary instead of a hard-coded map.
+- the default implementation remains process-local memory and preserves current behavior.
+- TTL and delete semantics are explicit at the store interface, leaving room for future shared implementations.
+
 Snapshot freshness contract:
 
 - `types.NodeSnapshot.FreshnessTTLms > 0`: snapshot is fresh and eligible for routing.
 - `types.NodeSnapshot.FreshnessTTLms <= 0`: snapshot is stale and can be filtered when `WithSnapshotTTLGuard(true)` is enabled.
+
+Snapshot state contract:
+
+- `types.NodeSnapshot.ObservedAt`: optional observation timestamp from the upstream state producer.
+- `types.NodeSnapshot.Version`: optional snapshot version string; when set, it must already be trimmed.
+- `types.NodeSnapshot.Source`: optional producer identifier; when set, it must already be trimmed.
+- `types.NodeSnapshot.CooldownUntil`: optional cooldown deadline; when both timestamps are set, it must not be earlier than `ObservedAt`.
+- `types.NodeSnapshot.OutlierReason`: optional lightweight explanation for degraded nodes; when set, it must already be trimmed.
 
 Validation includes:
 
@@ -290,7 +308,7 @@ Validation includes:
 - route class legality and algorithm binding completeness
 - fallback chain legality
 - BPS weight bounds and per-route-class weight sum
-- required LLM metrics (`ttft`, `tpot`, `kv_hit`)
+- required LLM metrics (`ttft`, `tpot`)
 - aggregated multi-error return via `errors.Join`
 
 Optional input boundary checks:

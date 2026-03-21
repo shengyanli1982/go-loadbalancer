@@ -44,7 +44,7 @@ func (Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnapsho
 	limit := len(selectedIdx)
 	out := make([]types.Candidate, 0, limit)
 	reasonBuffer := make([]string, limit*reasonCapacity)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		reasonOffset := i * reasonCapacity
 		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+reasonCapacity]
 		reason[0] = reasonAlgorithmLeastRequest

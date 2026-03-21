@@ -28,28 +28,24 @@ func main() {
 		TenantID:   "team-a",
 		SessionID:  "session-a",
 		RouteClass: types.RouteGeneric,
-		Model:      "model-a",
 	}
-	modelASet := types.NewModelCapabilitySet(map[string]bool{"model-a": true})
 
 	nodes := []types.NodeSnapshot{
 		{
-			NodeID:          "node-a",
-			Healthy:         true,
-			Inflight:        8,
-			QueueDepth:      4,
-			P95LatencyMs:    35,
-			ErrorRate:       0.003,
-			ModelCapability: modelASet,
+			NodeID:       "node-a",
+			Healthy:      true,
+			Inflight:     8,
+			QueueDepth:   4,
+			P95LatencyMs: 35,
+			ErrorRate:    0.003,
 		},
 		{
-			NodeID:          "node-b",
-			Healthy:         true,
-			Inflight:        3,
-			QueueDepth:      1,
-			P95LatencyMs:    18,
-			ErrorRate:       0.001,
-			ModelCapability: modelASet,
+			NodeID:       "node-b",
+			Healthy:      true,
+			Inflight:     3,
+			QueueDepth:   1,
+			P95LatencyMs: 18,
+			ErrorRate:    0.001,
 		},
 	}
 

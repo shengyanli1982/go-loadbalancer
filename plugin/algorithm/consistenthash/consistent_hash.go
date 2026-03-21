@@ -12,7 +12,6 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/types"
 )
 
-// pluginName 是 ch 插件注册名。
 const pluginName = "ch"
 
 const (
@@ -57,12 +56,10 @@ func init() {
 	registry.MustRegisterAlgorithm(&Plugin{})
 }
 
-// Name 返回插件注册名。
 func (*Plugin) Name() string {
 	return pluginName
 }
 
-// SelectCandidates 基于一致性哈希环选择候选节点。
 func (p *Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSnapshot, topK int) ([]types.Candidate, error) {
 	if topK <= 0 {
 		return nil, fmt.Errorf("topK=%d: %w", topK, lberrors.ErrPluginMisconfigured)
@@ -86,7 +83,11 @@ func (p *Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSn
 		return nil, lberrors.ErrNoCandidate
 	}
 
-	keyHash := hashRequestKey(req)
+	keyHash, ok := hashSessionKey(req)
+	if !ok {
+		return nil, lberrors.ErrNoCandidate
+	}
+
 	start := sort.Search(len(ring), func(i int) bool { return ring[i].hash >= keyHash })
 	if start == len(ring) {
 		start = 0
@@ -95,7 +96,10 @@ func (p *Plugin) SelectCandidates(req types.RequestContext, nodes []types.NodeSn
 	seen := make([]uint64, (len(nodes)+63)>>6)
 	out := make([]types.Candidate, 0, limit)
 	reasonBuffer := make([]string, limit*2)
-	for i := 0; i < len(ring) && len(out) < limit; i++ {
+	for i := range len(ring) {
+		if len(out) >= limit {
+			break
+		}
 		idx := (start + i) % len(ring)
 		nodeIndex := ring[idx].nodeIndex
 		seenWord := nodeIndex >> 6
@@ -149,14 +153,14 @@ func (p *Plugin) loadOrBuildRing(nodes []types.NodeSnapshot) ringCache {
 
 func buildRing(keys []nodeKey) []ringEntry {
 	capacity := 0
-	for i := 0; i < len(keys); i++ {
+	for i := range keys {
 		capacity += replicasForWeight(keys[i].weight)
 	}
 	ring := make([]ringEntry, 0, capacity)
 
 	for _, key := range keys {
 		replicas := replicasForWeight(key.weight)
-		for replica := 0; replica < replicas; replica++ {
+		for replica := range replicas {
 			ring = append(ring, ringEntry{
 				hash:      hashString64a(fnvOffset64, key.nodeID+"#"+strconv.Itoa(replica)),
 				nodeIndex: key.nodeIndex,
@@ -219,7 +223,6 @@ func snapshotStateAndCanonicalKeys(nodes []types.NodeSnapshot) ([]nodeState, []n
 		return keys[i].weight > keys[j].weight
 	})
 
-	// 去重：同 nodeID 仅保留第一个（更高权重优先）。
 	uniq := keys[:0]
 	uniq = append(uniq, nodeKey{
 		nodeID:    keys[0].nodeID,
@@ -241,7 +244,7 @@ func snapshotStateAndCanonicalKeys(nodes []types.NodeSnapshot) ([]nodeState, []n
 
 func nodesEqualState(nodes []types.NodeSnapshot, state []nodeState) bool {
 	if len(nodes) == len(state) {
-		for i := 0; i < len(nodes); i++ {
+		for i := range nodes {
 			if nodes[i].NodeID != state[i].nodeID {
 				return false
 			}
@@ -253,7 +256,7 @@ func nodesEqualState(nodes []types.NodeSnapshot, state []nodeState) bool {
 	}
 
 	stateIdx := 0
-	for i := 0; i < len(nodes); i++ {
+	for i := range nodes {
 		if nodes[i].NodeID == "" {
 			continue
 		}
@@ -278,22 +281,15 @@ func effectiveWeight(node *types.NodeSnapshot) int {
 	return node.StaticWeight
 }
 
-func hashRequestKey(req types.RequestContext) uint64 {
-	h := uint64(fnvOffset64)
-	if req.SessionID != "" {
-		return hashString64a(h, "sid:"+req.SessionID)
+func hashSessionKey(req types.RequestContext) (uint64, bool) {
+	if req.SessionID == "" {
+		return 0, false
 	}
-	if req.RequestID != "" {
-		return hashString64a(h, "rid:"+req.RequestID)
-	}
-	h = hashString64a(h, "tenant:"+req.TenantID)
-	h = hashString64a(h, "model:"+req.Model)
-	h = hashString64a(h, "route:"+string(req.RouteClass))
-	return h
+	return hashString64a(uint64(fnvOffset64), "sid:"+req.SessionID), true
 }
 
 func hashString64a(h uint64, s string) uint64 {
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		h ^= uint64(s[i])
 		h *= fnvPrime64
 	}

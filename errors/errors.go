@@ -10,8 +10,6 @@ var (
 	ErrInvalidConfig = errors.New("invalid config")
 	// ErrNoHealthyNodes 表示无健康节点可用。
 	ErrNoHealthyNodes = errors.New("no healthy nodes")
-	// ErrNoModelAvailable 表示所有节点都不可提供目标模型。
-	ErrNoModelAvailable = errors.New("model not available on any node")
 	// ErrNoCandidate 表示无可用候选节点。
 	ErrNoCandidate = errors.New("no route candidate")
 	// ErrPluginTimeout 表示插件执行超时。
@@ -22,6 +20,10 @@ var (
 	ErrDuplicatePlugin = errors.New("duplicate plugin")
 	// ErrUnknownPlugin 表示插件不存在。
 	ErrUnknownPlugin = errors.New("unknown plugin")
+	// ErrInputGuardRejectedRequest 表示请求输入被输入防御策略拒绝。
+	ErrInputGuardRejectedRequest = errors.New("input guard rejected request")
+	// ErrInputGuardRejectedNode 表示节点快照输入被输入防御策略拒绝。
+	ErrInputGuardRejectedNode = errors.New("input guard rejected node")
 )
 
 const (
@@ -47,6 +49,10 @@ const (
 	CodeInvalidWeightSum = "CONFIG_INVALID_WEIGHT_SUM"
 	// CodeMissingLLMWeights 表示 LLM 路由缺少必须权重项。
 	CodeMissingLLMWeights = "CONFIG_MISSING_LLM_WEIGHTS"
+	// CodeInputGuardRejectedRequest 表示请求输入触发输入防御拒绝。
+	CodeInputGuardRejectedRequest = "ROUTE_INPUT_GUARD_REJECT_REQUEST"
+	// CodeInputGuardRejectedNode 表示节点输入触发输入防御拒绝。
+	CodeInputGuardRejectedNode = "ROUTE_INPUT_GUARD_REJECT_NODE"
 )
 
 // ConfigError 表示配置字段级错误。

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/shengyanli1982/go-loadbalancer/config"
@@ -13,6 +14,7 @@ import (
 	_ "github.com/shengyanli1982/go-loadbalancer/plugin/builtin"
 	objectiveplugin "github.com/shengyanli1982/go-loadbalancer/plugin/objective"
 	policyplugin "github.com/shengyanli1982/go-loadbalancer/plugin/policy"
+	sessionaffinity "github.com/shengyanli1982/go-loadbalancer/plugin/policy/llmsessionaffinity"
 	"github.com/shengyanli1982/go-loadbalancer/registry"
 	"github.com/shengyanli1982/go-loadbalancer/telemetry"
 	"github.com/shengyanli1982/go-loadbalancer/types"
@@ -20,6 +22,7 @@ import (
 
 const (
 	stageFilter    = "filter"
+	stagePolicy    = "policy"
 	stageObjective = "objective"
 	stageRoute     = "route"
 	stageFallback  = "fallback"
@@ -31,7 +34,7 @@ const (
 	reasonSelectedByPolicyRanked = "selected_by=policy_ranked"
 	reasonFallbackPolicyRanked   = "fallback=policy_ranked"
 	reasonFallbackPrefix         = "fallback="
-	reasonCauseFormat            = "cause=%v"
+	reasonCauseFormat            = "cause=%s"
 
 	defaultObjectiveMaxConcurrent = 128
 )
@@ -45,15 +48,17 @@ type Balancer interface {
 // a2xBalancer 是 Balancer 接口的默认实现。
 // 包含配置、插件注册表和遥测数据收集器。
 type a2xBalancer struct {
-	cfg                config.Config  // 路由配置
-	sink               telemetry.Sink // 遥测数据收集器
-	routeAlgorithms    map[types.RouteClass]algorithmplugin.Plugin
-	policies           []policyplugin.Plugin
-	hardPolicies       []policyplugin.Plugin
-	objectivePlugin    objectiveplugin.Plugin
-	objectiveLimiter   chan struct{}
-	fallbackAlgorithms map[string]algorithmplugin.Plugin
-	telemetryEnabled   bool
+	cfg                 config.Config  // 路由配置
+	sink                telemetry.Sink // 遥测数据收集器
+	routeAlgorithms     map[types.RouteClass]algorithmplugin.Plugin
+	routePolicies       map[types.RouteClass][]policyplugin.Plugin
+	routeHardPolicies   map[types.RouteClass][]policyplugin.Plugin
+	routeFallbackChains map[types.RouteClass][]string
+	sessionAffinity     AffinityStore
+	objectivePlugin     objectiveplugin.Plugin
+	objectiveLimiter    chan struct{}
+	fallbackAlgorithms  map[string]algorithmplugin.Plugin
+	telemetryEnabled    bool
 }
 
 // New 创建 Balancer 实例。
@@ -72,53 +77,67 @@ func New(cfg config.Config, opts ...config.Option) (Balancer, error) {
 	}
 	reg := registry.Default()
 
-	routeAlgorithms := make(map[types.RouteClass]algorithmplugin.Plugin, len(local.Plugins.Algorithms))
-	for routeClass, algorithmName := range local.Plugins.Algorithms {
+	routeAlgorithms := make(map[types.RouteClass]algorithmplugin.Plugin, len(local.RouteClasses))
+	routePolicies := make(map[types.RouteClass][]policyplugin.Plugin, len(local.RouteClasses))
+	routeHardPolicies := make(map[types.RouteClass][]policyplugin.Plugin, len(local.RouteClasses))
+	routeFallbackChains := make(map[types.RouteClass][]string, len(local.RouteClasses))
+	seenRouteClass := make(map[types.RouteClass]struct{}, len(local.RouteClasses))
+	for _, routeClass := range local.RouteClasses {
+		if _, exists := seenRouteClass[routeClass]; exists {
+			continue
+		}
+		seenRouteClass[routeClass] = struct{}{}
+
+		profile := local.RouteProfileFor(routeClass)
+		algorithmName := profile.Algorithm
 		if ctor, ok := reg.GetAlgorithmFactory(algorithmName); ok {
 			plugin, err := instantiateAlgorithmFromFactory(algorithmName, ctor)
 			if err != nil {
 				return nil, err
 			}
 			routeAlgorithms[routeClass] = plugin
-			continue
-		}
-		prototype, ok := reg.GetAlgorithm(algorithmName)
-		if !ok || prototype == nil {
-			return nil, fmt.Errorf("algorithm=%s: %w", algorithmName, lberrors.ErrUnknownPlugin)
-		}
-		plugin, err := instantiateAlgorithmPlugin(prototype)
-		if err != nil {
-			return nil, fmt.Errorf("algorithm=%s: %w", algorithmName, err)
-		}
-		routeAlgorithms[routeClass] = plugin
-	}
-
-	policies := make([]policyplugin.Plugin, 0, len(local.Plugins.Policies))
-	hardPolicies := make([]policyplugin.Plugin, 0, len(local.Plugins.Policies))
-	for _, policyName := range local.Plugins.Policies {
-		if ctor, ok := reg.GetPolicyFactory(policyName); ok {
-			plugin, err := instantiatePolicyFromFactory(policyName, ctor)
+		} else {
+			prototype, ok := reg.GetAlgorithm(algorithmName)
+			if !ok || prototype == nil {
+				return nil, fmt.Errorf("algorithm=%s: %w", algorithmName, lberrors.ErrUnknownPlugin)
+			}
+			plugin, err := instantiateAlgorithmPlugin(prototype)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("algorithm=%s: %w", algorithmName, err)
+			}
+			routeAlgorithms[routeClass] = plugin
+		}
+
+		policies := make([]policyplugin.Plugin, 0, len(profile.Policies))
+		hardPolicies := make([]policyplugin.Plugin, 0, len(profile.Policies))
+		for _, policyName := range profile.Policies {
+			if ctor, ok := reg.GetPolicyFactory(policyName); ok {
+				plugin, err := instantiatePolicyFromFactory(policyName, ctor)
+				if err != nil {
+					return nil, err
+				}
+				policies = append(policies, plugin)
+				if isHardConstraintPolicy(plugin) {
+					hardPolicies = append(hardPolicies, plugin)
+				}
+				continue
+			}
+			prototype, ok := reg.GetPolicy(policyName)
+			if !ok || prototype == nil {
+				return nil, fmt.Errorf("policy=%s: %w", policyName, lberrors.ErrUnknownPlugin)
+			}
+			plugin, err := instantiatePolicyPlugin(prototype)
+			if err != nil {
+				return nil, fmt.Errorf("policy=%s: %w", policyName, err)
 			}
 			policies = append(policies, plugin)
 			if isHardConstraintPolicy(plugin) {
 				hardPolicies = append(hardPolicies, plugin)
 			}
-			continue
 		}
-		prototype, ok := reg.GetPolicy(policyName)
-		if !ok || prototype == nil {
-			return nil, fmt.Errorf("policy=%s: %w", policyName, lberrors.ErrUnknownPlugin)
-		}
-		plugin, err := instantiatePolicyPlugin(prototype)
-		if err != nil {
-			return nil, fmt.Errorf("policy=%s: %w", policyName, err)
-		}
-		policies = append(policies, plugin)
-		if isHardConstraintPolicy(plugin) {
-			hardPolicies = append(hardPolicies, plugin)
-		}
+		routePolicies[routeClass] = policies
+		routeHardPolicies[routeClass] = hardPolicies
+		routeFallbackChains[routeClass] = append([]string(nil), profile.DegradeChain...)
 	}
 
 	var objectivePlugin objectiveplugin.Plugin
@@ -157,30 +176,32 @@ func New(cfg config.Config, opts ...config.Option) (Balancer, error) {
 	}
 
 	fallbackAlgorithms := make(map[string]algorithmplugin.Plugin, len(local.FallbackChain))
-	for _, step := range local.FallbackChain {
-		if step == config.FallbackPolicyRanked {
-			continue
-		}
-		if _, exists := fallbackAlgorithms[step]; exists {
-			continue
-		}
-		if ctor, ok := reg.GetAlgorithmFactory(step); ok {
-			plugin, err := instantiateAlgorithmFromFactory(step, ctor)
+	for _, chain := range routeFallbackChains {
+		for _, step := range chain {
+			if step == config.FallbackPolicyRanked {
+				continue
+			}
+			if _, exists := fallbackAlgorithms[step]; exists {
+				continue
+			}
+			if ctor, ok := reg.GetAlgorithmFactory(step); ok {
+				plugin, err := instantiateAlgorithmFromFactory(step, ctor)
+				if err != nil {
+					return nil, err
+				}
+				fallbackAlgorithms[step] = plugin
+				continue
+			}
+			prototype, ok := reg.GetAlgorithm(step)
+			if !ok || prototype == nil {
+				return nil, fmt.Errorf("fallback=%s: %w", step, lberrors.ErrUnknownPlugin)
+			}
+			plugin, err := instantiateAlgorithmPlugin(prototype)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("fallback=%s: %w", step, err)
 			}
 			fallbackAlgorithms[step] = plugin
-			continue
 		}
-		prototype, ok := reg.GetAlgorithm(step)
-		if !ok || prototype == nil {
-			return nil, fmt.Errorf("fallback=%s: %w", step, lberrors.ErrUnknownPlugin)
-		}
-		plugin, err := instantiateAlgorithmPlugin(prototype)
-		if err != nil {
-			return nil, fmt.Errorf("fallback=%s: %w", step, err)
-		}
-		fallbackAlgorithms[step] = plugin
 	}
 
 	telemetryEnabled := local.TelemetrySink != nil
@@ -190,15 +211,17 @@ func New(cfg config.Config, opts ...config.Option) (Balancer, error) {
 	}
 
 	return &a2xBalancer{
-		cfg:                local,
-		sink:               local.TelemetrySink,
-		routeAlgorithms:    routeAlgorithms,
-		policies:           policies,
-		hardPolicies:       hardPolicies,
-		objectivePlugin:    objectivePlugin,
-		objectiveLimiter:   objectiveLimiter,
-		fallbackAlgorithms: fallbackAlgorithms,
-		telemetryEnabled:   telemetryEnabled,
+		cfg:                 local,
+		sink:                local.TelemetrySink,
+		routeAlgorithms:     routeAlgorithms,
+		routePolicies:       routePolicies,
+		routeHardPolicies:   routeHardPolicies,
+		routeFallbackChains: routeFallbackChains,
+		sessionAffinity:     newMemoryAffinityStore(),
+		objectivePlugin:     objectivePlugin,
+		objectiveLimiter:    objectiveLimiter,
+		fallbackAlgorithms:  fallbackAlgorithms,
+		telemetryEnabled:    telemetryEnabled,
 	}, nil
 }
 
@@ -214,9 +237,52 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 		started = time.Now()
 	}
 
-	// 第一步：先做硬约束过滤（健康状态、模型可用性）。
-	// 过滤出健康且支持目标模型的节点。
-	filtered, filterErr := filterNodes(req, nodes, b.cfg.SnapshotTTLGuard)
+	if b.cfg.InputGuard {
+		if err := validateInputGuardRequest(req); err != nil {
+			if b.telemetryEnabled {
+				b.emit(telemetry.TelemetryEvent{
+					Type:       telemetry.EventRouteDecision,
+					RouteClass: string(req.RouteClass),
+					Stage:      stageFilter,
+					Outcome:    outcomeFailed,
+					Reason:     err.Error(),
+					DurationMs: sinceMs(started),
+				})
+			}
+			return types.Candidate{}, err
+		}
+		if err := validateInputGuardNodes(nodes); err != nil {
+			if b.telemetryEnabled {
+				b.emit(telemetry.TelemetryEvent{
+					Type:       telemetry.EventRouteDecision,
+					RouteClass: string(req.RouteClass),
+					Stage:      stageFilter,
+					Outcome:    outcomeFailed,
+					Reason:     err.Error(),
+					DurationMs: sinceMs(started),
+				})
+			}
+			return types.Candidate{}, err
+		}
+	}
+
+	req = b.applySessionAffinityHint(req)
+
+	routingNodes, poolReason := b.applyReliabilityPilot(req, nodes)
+	if poolReason != "" && b.telemetryEnabled {
+		b.emit(telemetry.TelemetryEvent{
+			Type:       telemetry.EventRouteDecision,
+			RouteClass: string(req.RouteClass),
+			Stage:      stageFilter,
+			Outcome:    outcomeSuccess,
+			Reason:     poolReason,
+			DurationMs: sinceMs(started),
+		})
+	}
+
+	// 第一步：先做基础过滤（健康状态、可选的快照新鲜度约束）。
+	// 过滤出健康且满足当前快照约束的节点。
+	filtered, filterErr := filterNodes(req, routingNodes, b.cfg.SnapshotTTLGuard)
 	if filterErr != nil {
 		if b.telemetryEnabled {
 			b.emit(telemetry.TelemetryEvent{
@@ -238,39 +304,53 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 
 	// 第二步：算法层给出候选集；候选为空或出错都进入回退链。
 	// 调用算法插件从过滤后的节点中选出 TopK 个候选。
-	candidates, err := algorithmPlugin.SelectCandidates(req, filtered, b.cfg.TopK)
+	candidates, err := selectCandidatesWithOptionalContext(ctx, algorithmPlugin, req, filtered, b.cfg.TopK)
 	if err != nil {
-		candidate, fbErr := b.fallback(ctx, req, filtered, nil, errors.Join(err, lberrors.ErrNoCandidate))
+		candidate, fbErr := b.fallback(ctx, req, filtered, nil, types.NewFailureCause(types.FailureReasonAlgorithmError, err))
 		if fbErr != nil {
 			return types.Candidate{}, errors.Join(err, fbErr)
 		}
+		b.rememberSessionAffinity(req, candidate)
 		return candidate, nil
 	}
 	if len(candidates) == 0 {
-		candidate, fbErr := b.fallback(ctx, req, filtered, nil, lberrors.ErrNoCandidate)
+		candidate, fbErr := b.fallback(ctx, req, filtered, nil, types.NewFailureCause(types.FailureReasonNoCandidate, lberrors.ErrNoCandidate))
 		if fbErr != nil {
 			return types.Candidate{}, fbErr
 		}
+		b.rememberSessionAffinity(req, candidate)
 		return candidate, nil
 	}
 
 	ranked := candidates
 	// 第三步：策略层按顺序重排，任何策略失败都触发回退。
 	// 依次应用所有策略插件对候选进行重排。
-	for _, policyPlugin := range b.policies {
-		nextRanked, policyErr := policyPlugin.ReRank(req, ranked)
+	for _, policyPlugin := range b.routePolicies[req.RouteClass] {
+		nextRanked, policyErr := rerankWithOptionalContext(ctx, policyPlugin, req, ranked)
 		if policyErr != nil || len(nextRanked) == 0 {
 			baseErr := policyErr
 			if baseErr == nil {
 				baseErr = lberrors.ErrNoCandidate
 			}
 			if isHardConstraintPolicy(policyPlugin) {
+				if b.telemetryEnabled {
+					b.emit(telemetry.TelemetryEvent{
+						Type:       telemetry.EventRouteDecision,
+						RouteClass: string(req.RouteClass),
+						Stage:      stagePolicy,
+						Outcome:    outcomeFailed,
+						Reason:     fmt.Sprintf("role=%s %s", policyRole(policyPlugin), baseErr.Error()),
+						Plugin:     policyPlugin.Name(),
+						DurationMs: sinceMs(started),
+					})
+				}
 				return types.Candidate{}, baseErr
 			}
-			candidate, fbErr := b.fallback(ctx, req, filtered, ranked, baseErr)
+			candidate, fbErr := b.fallback(ctx, req, filtered, ranked, types.NewFailureCause(types.FailureReasonPolicyReject, baseErr))
 			if fbErr != nil {
 				return types.Candidate{}, errors.Join(baseErr, fbErr)
 			}
+			b.rememberSessionAffinity(req, candidate)
 			return candidate, nil
 		}
 		ranked = nextRanked
@@ -293,6 +373,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 					DurationMs:           sinceMs(started),
 				})
 			}
+			b.rememberSessionAffinity(req, candidate)
 			return candidate, nil
 		}
 		if b.telemetryEnabled {
@@ -307,10 +388,15 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 				DurationMs:           sinceMs(started),
 			})
 		}
-		candidate, fbErr := b.fallback(ctx, req, filtered, ranked, objectiveErr)
+		failureReason := types.FailureReasonObjectiveError
+		if errors.Is(objectiveErr, lberrors.ErrPluginTimeout) {
+			failureReason = types.FailureReasonObjectiveTimeout
+		}
+		candidate, fbErr := b.fallback(ctx, req, filtered, ranked, types.NewFailureCause(failureReason, objectiveErr))
 		if fbErr != nil {
 			return types.Candidate{}, errors.Join(objectiveErr, fbErr)
 		}
+		b.rememberSessionAffinity(req, candidate)
 		return candidate, nil
 	}
 
@@ -326,6 +412,7 @@ func (b *a2xBalancer) Route(ctx context.Context, req types.RequestContext, nodes
 			DurationMs: sinceMs(started),
 		})
 	}
+	b.rememberSessionAffinity(req, ranked[0])
 	return ranked[0], nil
 }
 
@@ -397,10 +484,14 @@ func (b *a2xBalancer) chooseByObjective(ctx context.Context, req types.RequestCo
 }
 
 // fallback 按配置的回退链依次尝试生成可用候选。
-func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, filtered []types.NodeSnapshot, ranked []types.Candidate, cause error) (types.Candidate, error) {
+func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, filtered []types.NodeSnapshot, ranked []types.Candidate, cause types.FailureCause) (types.Candidate, error) {
 	// 回退链允许混合使用 policy_ranked 和算法名，按配置顺序逐个尝试。
 	// 依次尝试回退链中的每个策略或算法。
-	for _, step := range b.cfg.FallbackChain {
+	chain := b.routeFallbackChains[req.RouteClass]
+	if len(chain) == 0 {
+		chain = b.cfg.FallbackChain
+	}
+	for _, step := range chain {
 		switch step {
 		case config.FallbackPolicyRanked:
 			// 如果回退步骤是 policy_ranked，直接返回策略排序后的第一候选。
@@ -408,14 +499,14 @@ func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, fi
 				continue
 			}
 			candidate := ranked[0]
-			candidate, allowed, hardErr := b.enforceHardPolicies(req, candidate)
+			candidate, allowed, hardErr := b.enforceHardPolicies(ctx, req, candidate)
 			if hardErr != nil {
 				return types.Candidate{}, hardErr
 			}
 			if !allowed {
 				continue
 			}
-			candidate.Reason = append(candidate.Reason, reasonFallbackPolicyRanked, fmt.Sprintf(reasonCauseFormat, cause))
+			candidate.Reason = append(candidate.Reason, reasonFallbackPolicyRanked, fmt.Sprintf(reasonCauseFormat, cause.Reason))
 			if b.telemetryEnabled {
 				b.emit(telemetry.TelemetryEvent{
 					Type:       telemetry.EventRouteFallback,
@@ -439,20 +530,20 @@ func (b *a2xBalancer) fallback(ctx context.Context, req types.RequestContext, fi
 			if topK > len(filtered) {
 				topK = len(filtered)
 			}
-			candidates, err := plugin.SelectCandidates(req, filtered, topK)
+			candidates, err := selectCandidatesWithOptionalContext(ctx, plugin, req, filtered, topK)
 			if err != nil || len(candidates) == 0 {
 				continue
 			}
 
 			for _, candidate := range candidates {
-				candidate, allowed, hardErr := b.enforceHardPolicies(req, candidate)
+				candidate, allowed, hardErr := b.enforceHardPolicies(ctx, req, candidate)
 				if hardErr != nil {
 					return types.Candidate{}, hardErr
 				}
 				if !allowed {
 					continue
 				}
-				candidate.Reason = append(candidate.Reason, reasonFallbackPrefix+step, fmt.Sprintf(reasonCauseFormat, cause))
+				candidate.Reason = append(candidate.Reason, reasonFallbackPrefix+step, fmt.Sprintf(reasonCauseFormat, cause.Reason))
 				if b.telemetryEnabled {
 					b.emit(telemetry.TelemetryEvent{
 						Type:       telemetry.EventRouteFallback,
@@ -476,15 +567,13 @@ func (b *a2xBalancer) emit(e telemetry.TelemetryEvent) {
 	telemetry.EmitSafe(b.sink, e)
 }
 
-// filterNodes 按健康状态与模型可用性执行硬约束过滤。
-func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot, enforceSnapshotTTL bool) ([]types.NodeSnapshot, error) {
+// filterNodes 按健康状态与快照新鲜度执行硬约束过滤。
+func filterNodes(_ types.RequestContext, nodes []types.NodeSnapshot, enforceSnapshotTTL bool) ([]types.NodeSnapshot, error) {
 	if len(nodes) == 0 {
 		return nil, lberrors.ErrNoHealthyNodes
 	}
 
-	model := req.Model
 	healthyCount := 0
-	matchedCount := 0
 	for i := range nodes {
 		n := &nodes[i]
 		if !n.Healthy {
@@ -494,23 +583,16 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot, enforceSn
 			continue
 		}
 		healthyCount++
-		if model != "" && !nodeSupportsModel(n, model) {
-			continue
-		}
-		matchedCount++
 	}
 
 	if healthyCount == 0 {
 		return nil, lberrors.ErrNoHealthyNodes
 	}
-	if matchedCount == 0 {
-		return nil, lberrors.ErrNoModelAvailable
-	}
-	if matchedCount == len(nodes) {
+	if healthyCount == len(nodes) {
 		return nodes, nil
 	}
 
-	filtered := make([]types.NodeSnapshot, 0, matchedCount)
+	filtered := make([]types.NodeSnapshot, 0, healthyCount)
 	for i := range nodes {
 		n := &nodes[i]
 		if !n.Healthy {
@@ -519,32 +601,162 @@ func filterNodes(req types.RequestContext, nodes []types.NodeSnapshot, enforceSn
 		if enforceSnapshotTTL && n.FreshnessTTLms <= 0 {
 			continue
 		}
-		if model != "" && !nodeSupportsModel(n, model) {
-			continue
-		}
 		filtered = append(filtered, *n)
 	}
 	return filtered, nil
 }
 
-func nodeSupportsModel(n *types.NodeSnapshot, model string) bool {
-	if n.ModelCapability != nil {
-		return n.ModelCapability.Allows(model)
+func validateInputGuardRequest(req types.RequestContext) error {
+	if err := req.Validate(); err != nil {
+		return fmt.Errorf("%s: %w", lberrors.CodeInputGuardRejectedRequest, errors.Join(lberrors.ErrInputGuardRejectedRequest, err))
 	}
-	if len(n.ModelAvailability) == 0 {
-		return true
-	}
-	return n.ModelAvailability[model]
+	return nil
 }
 
-func (b *a2xBalancer) enforceHardPolicies(req types.RequestContext, candidate types.Candidate) (types.Candidate, bool, error) {
-	if len(b.hardPolicies) == 0 {
+func validateInputGuardNodes(nodes []types.NodeSnapshot) error {
+	for idx := range nodes {
+		if err := nodes[idx].Validate(); err != nil {
+			return fmt.Errorf("%s node[%d]: %w", lberrors.CodeInputGuardRejectedNode, idx, errors.Join(lberrors.ErrInputGuardRejectedNode, err))
+		}
+	}
+	return nil
+}
+
+func (b *a2xBalancer) applySessionAffinityHint(req types.RequestContext) types.RequestContext {
+	if req.RouteClass != types.RouteLLMDecode || req.SessionID == "" {
+		return req
+	}
+	if current := strings.TrimSpace(req.Metadata[sessionaffinity.MetadataAffinityNodeKey]); current != "" {
+		return req
+	}
+
+	nodeID, ok := b.sessionAffinity.Get(req.SessionID)
+	if !ok || strings.TrimSpace(nodeID) == "" {
+		return req
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	req.Metadata[sessionaffinity.MetadataAffinityNodeKey] = nodeID
+	return req
+}
+
+func (b *a2xBalancer) rememberSessionAffinity(req types.RequestContext, candidate types.Candidate) {
+	if req.SessionID == "" {
+		return
+	}
+	if req.RouteClass != types.RouteLLMPrefill && req.RouteClass != types.RouteLLMDecode {
+		return
+	}
+	if strings.TrimSpace(candidate.Node.NodeID) == "" {
+		return
+	}
+	b.sessionAffinity.Set(req.SessionID, candidate.Node.NodeID, 0)
+}
+
+func (b *a2xBalancer) applyReliabilityPilot(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.NodeSnapshot, string) {
+	if !b.cfg.ReliabilityPilot || len(nodes) == 0 {
+		return nodes, ""
+	}
+
+	selected, poolReason := selectNodesByPool(req, nodes)
+	if len(selected) == 0 {
+		selected = nodes
+	}
+
+	filtered, dropped := filterOutliers(selected)
+	if dropped == 0 {
+		return filtered, poolReason
+	}
+	if poolReason == "" {
+		return filtered, fmt.Sprintf("outlier_isolation_dropped=%d", dropped)
+	}
+	return filtered, fmt.Sprintf("%s outlier_isolation_dropped=%d", poolReason, dropped)
+}
+
+func selectNodesByPool(req types.RequestContext, nodes []types.NodeSnapshot) ([]types.NodeSnapshot, string) {
+	primary := strings.TrimSpace(req.PrimaryPool)
+	if primary == "" {
+		return nodes, ""
+	}
+
+	order := make([]string, 0, 1+len(req.SecondaryPools))
+	seen := make(map[string]struct{}, 1+len(req.SecondaryPools))
+	order = append(order, primary)
+	seen[primary] = struct{}{}
+	for _, pool := range req.SecondaryPools {
+		normalized := strings.TrimSpace(pool)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		order = append(order, normalized)
+	}
+
+	var fallbackOutliers []types.NodeSnapshot
+	fallbackPool := ""
+	for idx, pool := range order {
+		poolNodes := make([]types.NodeSnapshot, 0)
+		nonOutliers := make([]types.NodeSnapshot, 0)
+		for _, node := range nodes {
+			if strings.TrimSpace(node.Pool) != pool {
+				continue
+			}
+			poolNodes = append(poolNodes, node)
+			if !node.Outlier {
+				nonOutliers = append(nonOutliers, node)
+			}
+		}
+		if len(nonOutliers) > 0 {
+			if idx == 0 {
+				return nonOutliers, fmt.Sprintf("pool_selected=%s", pool)
+			}
+			return nonOutliers, fmt.Sprintf("pool_degrade=%s->%s", primary, pool)
+		}
+		if len(poolNodes) > 0 && len(fallbackOutliers) == 0 {
+			fallbackOutliers = poolNodes
+			fallbackPool = pool
+		}
+	}
+	if len(fallbackOutliers) > 0 {
+		if fallbackPool == primary {
+			return fallbackOutliers, fmt.Sprintf("pool_selected=%s", fallbackPool)
+		}
+		return fallbackOutliers, fmt.Sprintf("pool_degrade=%s->%s", primary, fallbackPool)
+	}
+
+	return nodes, fmt.Sprintf("pool_miss=%s", primary)
+}
+
+func filterOutliers(nodes []types.NodeSnapshot) ([]types.NodeSnapshot, int) {
+	if len(nodes) == 0 {
+		return nodes, 0
+	}
+	filtered := make([]types.NodeSnapshot, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Outlier {
+			continue
+		}
+		filtered = append(filtered, node)
+	}
+	if len(filtered) == 0 {
+		return nodes, 0
+	}
+	return filtered, len(nodes) - len(filtered)
+}
+
+func (b *a2xBalancer) enforceHardPolicies(ctx context.Context, req types.RequestContext, candidate types.Candidate) (types.Candidate, bool, error) {
+	hardPolicies := b.routeHardPolicies[req.RouteClass]
+	if len(hardPolicies) == 0 {
 		return candidate, true, nil
 	}
 
 	ranked := []types.Candidate{candidate}
-	for _, policyPlugin := range b.hardPolicies {
-		nextRanked, err := policyPlugin.ReRank(req, ranked)
+	for _, policyPlugin := range hardPolicies {
+		nextRanked, err := rerankWithOptionalContext(ctx, policyPlugin, req, ranked)
 		if err != nil {
 			return types.Candidate{}, false, err
 		}
@@ -554,6 +766,27 @@ func (b *a2xBalancer) enforceHardPolicies(req types.RequestContext, candidate ty
 		ranked = nextRanked
 	}
 	return ranked[0], true, nil
+}
+
+func selectCandidatesWithOptionalContext(ctx context.Context, plugin algorithmplugin.Plugin, req types.RequestContext, nodes []types.NodeSnapshot, topK int) ([]types.Candidate, error) {
+	if contextual, ok := plugin.(algorithmplugin.ContextPlugin); ok {
+		return contextual.SelectCandidatesWithContext(ctx, req, nodes, topK)
+	}
+	return plugin.SelectCandidates(req, nodes, topK)
+}
+
+func rerankWithOptionalContext(ctx context.Context, plugin policyplugin.Plugin, req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
+	if contextual, ok := plugin.(policyplugin.ContextPlugin); ok {
+		return contextual.ReRankWithContext(ctx, req, candidates)
+	}
+	return plugin.ReRank(req, candidates)
+}
+
+func policyRole(plugin policyplugin.Plugin) policyplugin.Role {
+	if roleAware, ok := plugin.(policyplugin.RoleAwarePlugin); ok {
+		return roleAware.PolicyRole()
+	}
+	return policyplugin.RoleRerank
 }
 
 func safeChoose(plugin objectiveplugin.Plugin, req types.RequestContext, candidates []types.Candidate, objectiveName string) (candidate types.Candidate, err error) {

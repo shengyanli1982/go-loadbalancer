@@ -37,7 +37,7 @@ func SelectTopK(nodes []types.NodeSnapshot, topK int) []types.NodeSnapshot {
 		return nil
 	}
 	out := make([]types.NodeSnapshot, len(idx))
-	for i := 0; i < len(idx); i++ {
+	for i := range idx {
 		out[i] = nodes[idx[i]]
 	}
 	return out
@@ -50,7 +50,7 @@ func SelectTopKExcludeNodeID(nodes []types.NodeSnapshot, excludedNodeID string, 
 		return nil
 	}
 	out := make([]types.NodeSnapshot, len(idx))
-	for i := 0; i < len(idx); i++ {
+	for i := range idx {
 		out[i] = nodes[idx[i]]
 	}
 	return out
@@ -76,7 +76,7 @@ func selectTopKIndices(nodes []types.NodeSnapshot, topK int, excludedNodeID stri
 	}
 	if excludedNodeID == "" && topK >= len(nodes) {
 		out := make([]int, len(nodes))
-		for i := 0; i < len(nodes); i++ {
+		for i := range out {
 			out[i] = i
 		}
 		sort.Slice(out, func(i, j int) bool {
@@ -92,7 +92,7 @@ func selectTopKIndices(nodes []types.NodeSnapshot, topK int, excludedNodeID stri
 		nodes: nodes,
 		items: make([]int, 0, topK),
 	}
-	for i := 0; i < len(nodes); i++ {
+	for i := range nodes {
 		if excludedNodeID != "" && nodes[i].NodeID == excludedNodeID {
 			continue
 		}
@@ -117,7 +117,7 @@ func selectTopKIndices(nodes []types.NodeSnapshot, topK int, excludedNodeID stri
 func selectTopKSmallKIndices(nodes []types.NodeSnapshot, topK int, excludedNodeID string) []int {
 	selectedIdx := make([]int, 0, topK)
 	worstPos := -1
-	for i := 0; i < len(nodes); i++ {
+	for i := range nodes {
 		if excludedNodeID != "" && nodes[i].NodeID == excludedNodeID {
 			continue
 		}

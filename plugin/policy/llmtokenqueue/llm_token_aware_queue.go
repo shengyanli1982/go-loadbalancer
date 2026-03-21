@@ -31,49 +31,53 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+func (Plugin) PolicyRole() policy.Role {
+	return policy.RoleRerank
+}
+
 // ReRank 根据请求 token 规模在公平性与吞吐之间做折中重排。
 func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
 
-	out := append([]types.Candidate(nil), candidates...)
 	if req.RouteClass != types.RouteLLMPrefill && req.RouteClass != types.RouteLLMDecode {
-		for i := range out {
-			out[i].Reason = append(out[i].Reason, reasonSkipped)
+		for i := range candidates {
+			candidates[i].Reason = append(candidates[i].Reason, reasonSkipped)
 		}
-		return out, nil
+		return candidates, nil
 	}
 
 	totalTokens := req.PromptTokens + req.ExpectedTokens
 	shortRequest := totalTokens > 0 && totalTokens <= shortRequestTokenThreshold
 
-	sort.SliceStable(out, func(i, j int) bool {
-		si := score(out[i].Node, shortRequest)
-		sj := score(out[j].Node, shortRequest)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		si := score(candidates[i].Node, shortRequest)
+		sj := score(candidates[j].Node, shortRequest)
 		if si != sj {
 			return si < sj
 		}
-		return out[i].Node.NodeID < out[j].Node.NodeID
+		return candidates[i].Node.NodeID < candidates[j].Node.NodeID
 	})
 
 	reason := reasonLongReq
 	if shortRequest {
 		reason = reasonShortReq
 	}
-	for i := range out {
-		out[i].Reason = append(out[i].Reason, reason)
+	for i := range candidates {
+		candidates[i].Reason = append(candidates[i].Reason, reason)
 	}
-	return out, nil
+	return candidates, nil
 }
 
 func score(node types.NodeSnapshot, shortRequest bool) float64 {
 	if shortRequest {
 		// 短请求优先快进快出，增强对队列深度的惩罚。
-		return float64(node.QueueDepth*1000+node.Inflight*100) + node.TPOTMs*10 + node.P95LatencyMs
+		return float64(node.QueueDepth*1000+node.Inflight*100) + node.TPOTms*10 + node.P95LatencyMs
 	}
 	// 长请求更关注总体吞吐与公平，优先选择 inflight 较低节点。
-	return float64(node.Inflight*1000+node.QueueDepth*100) + node.TPOTMs*10 + node.P95LatencyMs
+	return float64(node.Inflight*1000+node.QueueDepth*100) + node.TPOTms*10 + node.P95LatencyMs
 }
 
 var _ policy.Plugin = Plugin{}
+var _ policy.RoleAwarePlugin = Plugin{}

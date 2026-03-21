@@ -14,9 +14,9 @@ func TestReRankPrefillTTFTFirst(t *testing.T) {
 	plugin := Plugin{}
 	req := types.RequestContext{RouteClass: types.RouteLLMPrefill}
 	candidates := []types.Candidate{
-		{Node: types.NodeSnapshot{NodeID: "n1", TTFTMs: 120}},
-		{Node: types.NodeSnapshot{NodeID: "n2", TTFTMs: 40}},
-		{Node: types.NodeSnapshot{NodeID: "n3", TTFTMs: 70}},
+		{Node: types.NodeSnapshot{NodeID: "n1", TTFTms: 120}},
+		{Node: types.NodeSnapshot{NodeID: "n2", TTFTms: 40}},
+		{Node: types.NodeSnapshot{NodeID: "n3", TTFTms: 70}},
 	}
 
 	out, err := plugin.ReRank(req, candidates)
@@ -32,9 +32,9 @@ func TestReRankDecodeTPOTFirst(t *testing.T) {
 	plugin := Plugin{}
 	req := types.RequestContext{RouteClass: types.RouteLLMDecode}
 	candidates := []types.Candidate{
-		{Node: types.NodeSnapshot{NodeID: "n1", TPOTMs: 8}},
-		{Node: types.NodeSnapshot{NodeID: "n2", TPOTMs: 3}},
-		{Node: types.NodeSnapshot{NodeID: "n3", TPOTMs: 5}},
+		{Node: types.NodeSnapshot{NodeID: "n1", TPOTms: 8}},
+		{Node: types.NodeSnapshot{NodeID: "n2", TPOTms: 3}},
+		{Node: types.NodeSnapshot{NodeID: "n3", TPOTms: 5}},
 	}
 
 	out, err := plugin.ReRank(req, candidates)

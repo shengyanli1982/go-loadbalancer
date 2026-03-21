@@ -49,7 +49,7 @@ func (p *Plugin) SelectCandidates(_ types.RequestContext, nodes []types.NodeSnap
 
 	reasonBuffer := make([]string, limit*2)
 	out := make([]types.Candidate, 0, limit)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		idx := (start + i) % len(nodes)
 		reasonOffset := i * 2
 		reason := reasonBuffer[reasonOffset : reasonOffset+2 : reasonOffset+2]

@@ -30,8 +30,8 @@ func benchmarkCandidates(n int) []types.Candidate {
 				QueueDepth:     (i*13 + 3) % 200,
 				P95LatencyMs:   float64((i*11)%150) + 1,
 				ErrorRate:      float64((i*5)%30) / 1000.0,
-				TTFTMs:         float64((i*7)%180) + 1,
-				TPOTMs:         float64((i*17)%120) + 1,
+				TTFTms:         float64((i*7)%180) + 1,
+				TPOTms:         float64((i*17)%120) + 1,
 				KVCacheHitRate: float64((i*19)%100) / 100.0,
 			},
 		})

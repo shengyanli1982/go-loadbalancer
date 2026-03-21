@@ -32,23 +32,26 @@ func (Plugin) Name() string {
 	return pluginName
 }
 
+func (Plugin) PolicyRole() policy.Role {
+	return policy.RoleAffinity
+}
+
 // ReRank 对 LLM 路由按 KV 命中率优先重排。
 func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]types.Candidate, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
 
-	out := append([]types.Candidate(nil), candidates...)
 	if req.RouteClass != types.RouteLLMPrefill && req.RouteClass != types.RouteLLMDecode {
-		for i := range out {
-			out[i].Reason = append(out[i].Reason, reasonSkipped)
+		for i := range candidates {
+			candidates[i].Reason = append(candidates[i].Reason, reasonSkipped)
 		}
-		return out, nil
+		return candidates, nil
 	}
 
 	preferredNodes := parsePreferredNodes(req.Metadata)
-	sort.SliceStable(out, func(i, j int) bool {
-		ai, aj := out[i].Node, out[j].Node
+	sort.SliceStable(candidates, func(i, j int) bool {
+		ai, aj := candidates[i].Node, candidates[j].Node
 		aiPreferred := preferredNodes[ai.NodeID]
 		ajPreferred := preferredNodes[aj.NodeID]
 		if aiPreferred != ajPreferred {
@@ -63,15 +66,21 @@ func (Plugin) ReRank(req types.RequestContext, candidates []types.Candidate) ([]
 		if ai.QueueDepth != aj.QueueDepth {
 			return ai.QueueDepth < aj.QueueDepth
 		}
-		return false
+		if req.RouteClass == types.RouteLLMPrefill && ai.TTFTms != aj.TTFTms {
+			return ai.TTFTms < aj.TTFTms
+		}
+		if req.RouteClass == types.RouteLLMDecode && ai.TPOTms != aj.TPOTms {
+			return ai.TPOTms < aj.TPOTms
+		}
+		return ai.NodeID < aj.NodeID
 	})
-	for i := range out {
-		out[i].Reason = append(out[i].Reason, reasonApplied)
-		if preferredNodes[out[i].Node.NodeID] {
-			out[i].Reason = append(out[i].Reason, reasonHinted)
+	for i := range candidates {
+		candidates[i].Reason = append(candidates[i].Reason, reasonApplied)
+		if preferredNodes[candidates[i].Node.NodeID] {
+			candidates[i].Reason = append(candidates[i].Reason, reasonHinted)
 		}
 	}
-	return out, nil
+	return candidates, nil
 }
 
 func parsePreferredNodes(metadata map[string]string) map[string]bool {
@@ -105,3 +114,4 @@ func parsePreferredNodes(metadata map[string]string) map[string]bool {
 }
 
 var _ policy.Plugin = Plugin{}
+var _ policy.RoleAwarePlugin = Plugin{}
