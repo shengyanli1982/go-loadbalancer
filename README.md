@@ -1,325 +1,342 @@
-﻿<div align="center">
-  <h1>A2X Go Load Balancer</h1>
-  <p><strong>One balancing core for both generic traffic and LLM inference traffic.</strong></p>
-  <p>Default-Ready · Plugin-First · Fallback-Safe</p>
+# A2X Load Balancer
+
+<div align="center">
+
+![Logo](assets/logo.png)
+
+**Production-ready load balancing algorithm library for Go services, providing efficient traffic distribution.**
+
 </div>
 
-![Architecture](https://img.shields.io/badge/Architecture-A2X-2E86DE)
-![Tests](https://img.shields.io/badge/Tests-16%20passing-success)
-![Race Support](https://img.shields.io/badge/Race%20Test-Windows%20Friendly-brightgreen)
+[![Go Report Card](https://goreportcard.com/badge/github.com/shengyanli1982/go-loadbalancer)](https://goreportcard.com/report/github.com/shengyanli1982/go-loadbalancer)
+[![Build Status](https://github.com/shengyanli1982/go-loadbalancer/actions/workflows/test.yaml/badge.svg)](https://github.com/shengyanli1982/go-loadbalancer)
 [![Go Reference](https://pkg.go.dev/badge/github.com/shengyanli1982/go-loadbalancer.svg)](https://pkg.go.dev/github.com/shengyanli1982/go-loadbalancer)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/shengyanli1982/go-loadbalancer)
 
-`go-loadbalancer` is a production-oriented routing library for teams that need stable load balancing today and safe strategy evolution tomorrow.
+## Why Go Load Balancer
 
-Start with a default config and built-in plugins. Then evolve toward advanced LLM-aware policies without changing your core mental model.
+When your service needs to distribute traffic across multiple backend instances, Go Load Balancer provides a rich set of load balancing algorithms while maintaining a clean API design.
 
-## Responsibility Boundary
+- **Rich Algorithms**: Supports 10+ load balancing algorithms, from simple round-robin to advanced consistent hashing.
+- **High Performance**: Uses `maphash` for hashing and `sync.Pool` for object reuse, minimizing memory allocations.
+- **Thread Safe**: All algorithms are designed for concurrent safety, usable directly in Goroutines.
+- **Clean Interface**: Unified `Selector` interface, easy to understand and integrate.
+- **Extensible**: Supports custom Backend interface and Hash Selector.
 
-This is an SDK routing decision library, and upstream probing should be implemented by external systems, which then update each node's state.
+## Supported Algorithms
 
-The balancer itself only applies health filtering and optional snapshot freshness guards. Higher-level routing semantics stay in request state, node state, and plugins instead of any built-in per-model capability gate.
-
-## Why Teams Choose A2X
-
-- **One core, multiple traffic classes**: `generic`, `llm-prefill`, `llm-decode`.
-- **Safe by default**: no Objective plugin required for stable routing.
-- **Composable plugin architecture**: algorithm, policy, and objective layers are decoupled.
-- **Failure containment built in**: fallback chain protects availability when advanced plugins fail.
-- **Strict config contracts**: typed config, validation, structured errors, and aggregated failures.
-
-## Product Fit
-
-A2X is built for:
-
-- Platform teams building shared routing foundations.
-- Inference teams that need both cost control and latency control.
-- Backend teams that want gradual strategy rollout instead of risky rewrites.
-
-## Capability Portfolio
-
-| Layer             | Built-in                                                                                                                                | What It Gives You                                     |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Core Balancer     | Routing pipeline + fallback                                                                                                             | Stable hot path and predictable behavior              |
-| Algorithm Plugins | `rr`, `wrr`, `ch`, `p2c`, `lr`                                                                                                          | Fast balancing strategies for real traffic            |
-| Policy Plugins    | `health_gate`, `tenant_quota`, `llm_budget_gate`, `llm_kv_affinity`, `llm_session_affinity`, `llm_stage_aware`, `llm_token_aware_queue` | Health/capacity gates plus explicit affinity controls |
-| Objective Plugin  | `weighted_objective` (optional)                                                                                                         | Top-K second-pass optimization                        |
-| Telemetry         | `Sink`, `NoopSink`                                                                                                                      | Clean observability integration boundary              |
-
-## Algorithm IDs
-
-We use short algorithm IDs in config for product readability:
-
-| ID    | Meaning              |
-| ----- | -------------------- |
-| `rr`  | Round Robin          |
-| `wrr` | Weighted Round Robin |
-| `p2c` | Power of Two Choices |
-| `lr`  | Least Request        |
-| `ch`  | Consistent Hash      |
-
-## Performance
-
-```bash
-go test -run ^$ -bench . -benchmem ./balancer ./plugin/algorithm/rr ./plugin/algorithm/wrr ./plugin/algorithm/consistenthash ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest ./plugin/objective/weighted ./registry
-```
-
-Benchmark environment (measured on 2026-03-20):
-
-- Go `1.24.13`
-- OS/Arch: `windows/amd64`
-- CPU: `Intel(R) Core(TM) 5 210H`
-
-Core route benchmarks:
-
-| Benchmark                                                | ns/op | B/op | allocs/op |
-| -------------------------------------------------------- | ----: | ---: | --------: |
-| `BenchmarkRoute/serial_nodes_32`                         | 659.6 | 1392 |         3 |
-| `BenchmarkRoute/serial_nodes_256`                        |  1601 | 1392 |         3 |
-| `BenchmarkRoute/serial_nodes_1024`                       |  5163 | 1392 |         3 |
-| `BenchmarkRoute/parallel_nodes_256`                      | 601.4 | 1392 |         3 |
-| `BenchmarkRoute/serial_default_config_nodes_256`         |  2615 | 1952 |         3 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`      |  9694 | 2776 |        17 |
-| `BenchmarkRoute/serial_fallback_policy_ranked_nodes_256` |  6869 | 1417 |         4 |
-
-Failure-path benchmarks:
-
-| Benchmark                                            | ns/op | B/op | allocs/op |
-| ---------------------------------------------------- | ----: | ---: | --------: |
-| `BenchmarkRouteFailurePaths/serial_no_healthy_nodes` | 98.72 |    0 |         0 |
-| `BenchmarkRouteFailurePaths/serial_empty_candidates` |  2871 |   56 |         2 |
-| `BenchmarkRouteFailurePaths/serial_algorithm_error`  |  2919 |  168 |         6 |
-
-Selected component benchmarks:
-
-| Benchmark                                             | ns/op | B/op | allocs/op |
-| ----------------------------------------------------- | ----: | ---: | --------: |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`rr`)  | 496.4 | 2048 |         2 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`wrr`) |  4285 | 2048 |         2 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`ch`)  |  3212 | 2176 |         3 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`p2c`) |  4217 | 3264 |         3 |
-| `BenchmarkSelectCandidates/nodes_1024_topk_8` (`lr`)  |  2266 | 2368 |         3 |
-| `BenchmarkChoose` (`plugin/objective/weighted`)       | 540.0 |   16 |         1 |
-| `BenchmarkManagerGetAlgorithm/hit_serial`             | 15.83 |    0 |         0 |
-| `BenchmarkManagerHasAlgorithm/hit_serial`             | 16.20 |    0 |         0 |
-| `BenchmarkManagerRegisterAlgorithmParallel`           | 416.5 |  152 |         1 |
-
-Algorithm deep-dive benchmark command:
-
-```bash
-go test -run ^$ -bench BenchmarkSelectCandidates -benchmem ./plugin/algorithm/rr ./plugin/algorithm/wrr ./plugin/algorithm/consistenthash ./plugin/algorithm/p2c ./plugin/algorithm/leastrequest
-```
-
-Numbers are from a single local run and should be used as a baseline reference. Re-run on your target hardware for production capacity planning.
-
-Objective guard benchmark command:
-
-```bash
-go test -run ^$ -bench "BenchmarkRoute/(serial_nodes_256|serial_default_config_nodes_256|serial_objective_enabled_nodes_256|parallel_objective_guard_max_concurrent_1_nodes_256|parallel_objective_guard_max_concurrent_64_nodes_256)$|BenchmarkRouteObjectiveGuardLatency/(max_concurrent_1_nodes_256|max_concurrent_64_nodes_256)$" -benchmem -benchtime=2s -count=1 ./balancer
-```
-
-Objective guard benchmark environment (measured on 2026-03-20):
-
-- Go `1.24.13`
-- OS/Arch: `windows/amd64`
-- CPU: `Intel(R) Core(TM) 5 210H`
-
-Objective guard benchmark results:
-
-| Benchmark                                                             |   ns/op | req/s | p95 (ms) | p99 (ms) | B/op | allocs/op |
-| --------------------------------------------------------------------- | ------: | ----: | -------: | -------: | ---: | --------: |
-| `BenchmarkRoute/serial_nodes_256`                                     |    1659 |   N/A |      N/A |      N/A | 1392 |         3 |
-| `BenchmarkRoute/serial_default_config_nodes_256`                      |    3086 |   N/A |      N/A |      N/A | 1952 |         3 |
-| `BenchmarkRoute/serial_objective_enabled_nodes_256`                   |    9991 |   N/A |      N/A |      N/A | 2776 |        17 |
-| `BenchmarkRoute/parallel_objective_guard_max_concurrent_1_nodes_256`  | 1018754 |   N/A |      N/A |      N/A | 2744 |        17 |
-| `BenchmarkRoute/parallel_objective_guard_max_concurrent_64_nodes_256` |   82056 |   N/A |      N/A |      N/A | 2744 |        17 |
-| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_1_nodes_256`      |  863215 |  1158 |    22.41 |    37.70 | 2746 |        17 |
-| `BenchmarkRouteObjectiveGuardLatency/max_concurrent_64_nodes_256`     |   57668 | 17322 |    1.277 |    2.911 | 2744 |        17 |
-
-Observed deltas from this run:
-
-- objective enabled (serial): `9991 ns/op` vs `3086 ns/op` (default config), +223.8% hot-path cost in this synthetic setup.
-- parallel throughput (guard 64 vs guard 1): `17322 req/s` vs `1158 req/s`, about `15.0x` improvement.
-- tail latency (guard 64 vs guard 1): p95 `1.277 ms` vs `22.41 ms`, about `94.3%` lower; p99 `2.911 ms` vs `37.70 ms`, about `92.3%` lower.
+| Algorithm                      | Type              | Description                                                  |
+| ------------------------------ | ----------------- | ------------------------------------------------------------ |
+| **Random**                     | Probabilistic     | Randomly selects a backend, simple and efficient             |
+| **Round Robin**                | Round Robin       | Sequentially iterates through all backends in a cycle        |
+| **Weighted Round Robin**       | Weighted          | Distributes traffic proportional to weights                  |
+| **Smooth Weighted RR**         | Smooth Weighted   | Nginx-style smooth weighted algorithm, smoother distribution |
+| **Least Connections**          | Least Connections | Selects backend with fewest current connections              |
+| **P2C (Power of Two Choices)** | Dual Selection    | Randomly picks two, selects the less loaded one              |
+| **IP Hash**                    | Hash              | Hash-based distribution using client IP                      |
+| **URI Hash**                   | Hash              | Hash-based distribution using request URI                    |
+| **Ring Hash**                  | Consistent Hash   | Virtual node ring, resilient to node changes                 |
+| **Maglev**                     | Consistent Hash   | Google paper implementation, fast lookup                     |
 
 ## Quick Start
 
-### 1) Verify your local setup
-
 ```bash
-go test ./...
+go get github.com/shengyanli1982/go-loadbalancer
 ```
 
-### 2) Minimal integration example
+### Basic Usage
 
 ```go
 package main
 
 import (
-	"context"
 	"fmt"
-	"log"
 
-	"github.com/shengyanli1982/go-loadbalancer/balancer"
-	"github.com/shengyanli1982/go-loadbalancer/config"
-	"github.com/shengyanli1982/go-loadbalancer/types"
+	"github.com/shengyanli1982/go-loadbalancer/lb"
 )
 
+type backend struct {
+	addr string
+}
+
+func (b *backend) Address() string {
+	return b.addr
+}
+
 func main() {
-	lb, err := balancer.New(
-		config.DefaultConfig(),
-		config.WithTopK(5),
-		config.WithAlgorithm(types.RouteGeneric, config.AlgorithmLeastRequest),
-		config.WithPolicies(config.PolicyHealthGate),
-	)
-	if err != nil {
-		log.Fatalf("create balancer: %v", err)
-	}
-	defer func() { _ = lb.Close(context.Background()) }()
-
-	req := types.RequestContext{
-		RequestID:  "req-1",
-		TenantID:   "team-a",
-		SessionID:  "session-a",
-		RouteClass: types.RouteGeneric,
+	selector := lb.NewRoundRobin()
+	backends := []lb.Backend{
+		&backend{addr: "192.168.1.1:8080"},
+		&backend{addr: "192.168.1.2:8080"},
+		&backend{addr: "192.168.1.3:8080"},
 	}
 
-	nodes := []types.NodeSnapshot{
-		{
-			NodeID:       "node-a",
-			Healthy:      true,
-			Inflight:     10,
-			QueueDepth:   5,
-			P95LatencyMs: 30,
-			ErrorRate:    0.02,
-		},
-		{
-			NodeID:       "node-b",
-			Healthy:      true,
-			Inflight:     3,
-			QueueDepth:   1,
-			P95LatencyMs: 18,
-			ErrorRate:    0.01,
-		},
+	for i := 0; i < 5; i++ {
+		backend := selector.Select(backends)
+		fmt.Println(backend.Address())
 	}
-
-	chosen, err := lb.Route(context.Background(), req, nodes)
-	if err != nil {
-		log.Fatalf("route failed: %v", err)
-	}
-
-	fmt.Printf("chosen=%s score=%.2f reason=%v\n", chosen.Node.NodeID, chosen.Score, chosen.Reason)
 }
 ```
 
-### 3) Run ready-to-use examples
+### Using Weighted Backends
 
-```bash
-go run ./examples/basic-routing
-go run ./examples/algorithm-matrix
-go run ./examples/objective-routing
-go run ./examples/fallback-routing
-go run ./examples/telemetry-sink
+```go
+selector := lb.NewWeightedRR()
+backends := []lb.Backend{
+	&weightedBackend{addr: "192.168.1.1:8080", weight: 3},
+	&weightedBackend{addr: "192.168.1.2:8080", weight: 1},
+}
+
+backend := selector.Select(backends)
+fmt.Println(backend.Address())
 ```
 
-Examples overview:
+### Using Hash Algorithms
 
-- `examples/basic-routing`: minimal and stable generic routing.
-- `examples/algorithm-matrix`: quick runnable matrix for `rr`, `wrr`, `p2c`, `lr`, `ch`.
-- `examples/objective-routing`: objective-enabled LLM prefill routing.
-- `examples/fallback-routing`: policy failure path with fallback chain.
-- `examples/telemetry-sink`: custom telemetry sink integration.
+```go
+selector := lb.NewRingHash(nil)
+backends := []lb.Backend{
+	&backend{addr: "192.168.1.1:8080"},
+	&backend{addr: "192.168.1.2:8080"},
+}
 
-## Reliability by Design
+key := []byte("user-123-session")
+backend := selector.SelectByHash(backends, key)
+fmt.Println(backend.Address())
+```
 
-- **Filter-first guarantees**: unhealthy nodes fail fast with typed errors.
-- **Policy-safe routing**: policy failures or empty policy outputs trigger fallback.
-- **Objective-safe routing**: objective timeout/failure degrades to policy-ranked candidate.
-- **Telemetry-safe execution**: telemetry callback panic never breaks routing.
+## Algorithm Details
 
-Common typed errors:
+### Random
 
-- `ErrInvalidConfig`
-- `ErrNoHealthyNodes`
-- `ErrNoCandidate`
-- `ErrPluginTimeout`
+```go
+selector := lb.NewRandom()
+```
 
-## Config Experience
+- **Pros**: Simple implementation, stateless
+- **Cons**: Cannot guarantee even request distribution
+- **Use case**: Backends have consistent performance, random distribution is acceptable
 
-Core config pattern: `DefaultConfig + Option + Validate`
+### Round Robin
 
-Frequently used options:
+```go
+selector := lb.NewRoundRobin()
+```
 
-- `WithTopK(v int)`
-- `WithAlgorithm(routeClass, pluginName string)`
-- `WithPolicies(names ...string)`
-- `WithObjective(name string, timeoutMs int, enabled bool)`
-- `WithObjectiveMaxConcurrent(v int)`
-- `WithWeight(routeClass, metric string, w int)`
-- `WithSnapshotTTLGuard(enabled bool)`
-- `WithTelemetrySink(s telemetry.Sink)`
+- **Pros**: Simple implementation, even request distribution
+- **Cons**: Cannot account for backend performance differences
+- **Use case**: Backends have consistent performance
 
-Default policy chain (capacity/health-first):
+### Weighted Round Robin
 
-- `health_gate -> tenant_quota -> llm_budget_gate`
+```go
+selector := lb.NewWeightedRR()
+```
 
-Explicit semantic / affinity policies (opt-in only):
+- **Pros**: Distributes traffic proportional to weights
+- **Cons**: May select high-weight backends consecutively
+- **Use case**: Backends have different performance, need proportional distribution
 
-- `llm_token_aware_queue`
-- `llm_stage_aware`
-- `llm_kv_affinity`
-- `llm_session_affinity`
+### Smooth Weighted RR
 
-Objective guard tuning notes:
+```go
+selector := lb.NewSmoothWeightedRR()
+```
 
-- `timeoutMs` valid range: `1..200`.
-- `maxConcurrent` valid range when set: `1..2048`; default is `128`.
-- Prefill/decode requests apply stage-aware timeout scaling based on token size before objective execution.
+- **Pros**: Smoother distribution, avoids consecutive selection of same backend
+- **Cons**: Slightly higher implementation complexity
+- **Use case**: Production environments requiring even distribution
 
-Request-level KV affinity hint:
+### Least Connections
 
-- metadata key: `llm_kv_affinity_preferred_nodes`
-- value format: node id list split by comma / semicolon / whitespace, e.g. `node-a,node-b`
-- effect: hinted nodes are prioritized before global `KVCacheHitRate` sorting for `llm-prefill` and `llm-decode`.
+```go
+selector := lb.NewLeastConn()
 
-Session affinity storage boundary:
+// Release connection after request completes
+if releaser, ok := selector.(lb.LeastConnReleaser); ok {
+	releaser.Release(backend)
+}
+```
 
-- decode session affinity now uses an internal `AffinityStore` boundary instead of a hard-coded map.
-- the default implementation remains process-local memory and preserves current behavior.
-- TTL and delete semantics are explicit at the store interface, leaving room for future shared implementations.
+- **Pros**: Dynamically adapts to backend load
+- **Cons**: Requires maintaining connection state
+- **Use case**: Large variation in backend processing times
 
-Snapshot freshness contract:
+### P2C (Power of Two Choices)
 
-- `types.NodeSnapshot.FreshnessTTLms > 0`: snapshot is fresh and eligible for routing.
-- `types.NodeSnapshot.FreshnessTTLms <= 0`: snapshot is stale and can be filtered when `WithSnapshotTTLGuard(true)` is enabled.
+```go
+selector := lb.NewP2C()
+```
 
-Snapshot state contract:
+- **Pros**: Balances randomness and load balancing
+- **Cons**: Requires maintaining load state
+- **Use case**: Large-scale distributed systems
 
-- `types.NodeSnapshot.ObservedAt`: optional observation timestamp from the upstream state producer.
-- `types.NodeSnapshot.Version`: optional snapshot version string; when set, it must already be trimmed.
-- `types.NodeSnapshot.Source`: optional producer identifier; when set, it must already be trimmed.
-- `types.NodeSnapshot.CooldownUntil`: optional cooldown deadline; when both timestamps are set, it must not be earlier than `ObservedAt`.
-- `types.NodeSnapshot.OutlierReason`: optional lightweight explanation for degraded nodes; when set, it must already be trimmed.
+### IP Hash
 
-Validation includes:
+```go
+selector := lb.NewIPHash()
 
-- static schema checks powered by `validator/v10` (pinned to `v10.27.0`)
-- validator checks are used on config boundaries, not on the `Route` hot path
-- route class legality and algorithm binding completeness
-- fallback chain legality
-- BPS weight bounds and per-route-class weight sum
-- required LLM metrics (`ttft`, `tpot`)
-- aggregated multi-error return via `errors.Join`
+clientIP := []byte("10.0.0.1")
+backend := selector.SelectByHash(backends, clientIP)
+```
 
-Optional input boundary checks:
+- **Pros**: Same IP requests route to same backend
+- **Cons**: May rebalance when backends change
+- **Use case**: Scenarios requiring session persistence
 
-- `types.RequestContext.Validate()`
-- `types.NodeSnapshot.Validate()`
+### URI Hash
 
-## API Reference
+```go
+selector := lb.NewURIHash(nil)
 
-- GoDoc: <https://pkg.go.dev/github.com/shengyanli1982/go-loadbalancer>
+// Optional: include query parameters
+selector := lb.NewURIHash(&lb.URIHashOptions{IncludeQuery: true})
 
-## DeepWiki
+uri := []byte("/api/users")
+backend := selector.SelectByHash(backends, uri)
+```
 
-- <https://deepwiki.com/shengyanli1982/go-loadbalancer>
+- **Pros**: Same URI requests route to same backend
+- **Cons**: May rebalance when backends change
+- **Use case**: Cache-friendly routing
+
+### Ring Hash (Consistent Hash)
+
+```go
+selector := lb.NewRingHash(nil)
+
+// Optional: custom configuration
+selector := lb.NewRingHash(&lb.RingHashOptions{
+	VirtualNodes: 150,
+})
+
+backend := selector.SelectByHash(backends, key)
+```
+
+- **Pros**: Minimal impact when nodes change
+- **Cons**: Higher implementation complexity
+- **Use case**: Nodes change frequently
+
+### Maglev
+
+```go
+selector := lb.NewMaglev(nil)
+
+// Optional: custom table size
+selector := lb.NewMaglev(&lb.MaglevOptions{
+	TableSize: 65537,
+})
+
+backend := selector.SelectByHash(backends, key)
+```
+
+- **Pros**: O(1) lookup speed, space efficient
+- **Cons**: Table building takes time
+- **Use case**: High performance requirements
+
+## Interface Design
+
+### Backend Interface
+
+```go
+type Backend interface {
+	Address() string
+}
+
+type WeightedBackend interface {
+	Backend
+	Weight() int
+}
+```
+
+### Selector Interface
+
+```go
+type Selector interface {
+	Select(backends []Backend) Backend
+}
+
+type HashSelector interface {
+	SelectByHash(backends []Backend, key []byte) Backend
+}
+```
+
+### Helper Functions
+
+```go
+func SelectOrNil(s Selector, backends []Backend) Backend {
+	if len(backends) == 0 {
+		return nil
+	}
+	return s.Select(backends)
+}
+```
+
+## Constants
+
+```go
+const (
+	MaxBackends     = 65536
+	MinRingSize     = 128
+	MaxRingSize     = 1 << 20
+	DefaultRingSize = 1 << 16
+	MaglevTableSize = 65537
+	MinWeight       = 1
+	MaxWeight       = 65535
+)
+
+const (
+	P2CTrials = 2
+	P2CBias   = 0.0
+)
+```
+
+## Error Handling
+
+```go
+var ErrNilBackends = &Error{
+	Code:    ErrCodeNilBackends,
+	Message: "backend list is nil or empty",
+}
+
+func ErrInvalidWeight(cause error) *Error
+func ErrInvalidRingSize(cause error) *Error
+```
+
+## Examples
+
+Complete examples are available in the [`lb/examples`](./lb/examples) directory:
+
+- [`random_example_test.go`](./lb/examples/random_example_test.go) - Random algorithm example
+- [`round_robin_example_test.go`](./lb/examples/round_robin_example_test.go) - Round Robin algorithm example
+- [`weighted_rr_example_test.go`](./lb/examples/weighted_rr_example_test.go) - Weighted RR example
+- [`smooth_weighted_rr_example_test.go`](./lb/examples/smooth_weighted_rr_example_test.go) - Smooth weighted RR example
+- [`least_conn_example_test.go`](./lb/examples/least_conn_example_test.go) - Least connections example
+- [`p2c_example_test.go`](./lb/examples/p2c_example_test.go) - P2C algorithm example
+- [`ip_hash_example_test.go`](./lb/examples/ip_hash_example_test.go) - IP Hash example
+- [`uri_hash_example_test.go`](./lb/examples/uri_hash_example_test.go) - URI Hash example
+- [`ring_hash_example_test.go`](./lb/examples/ring_hash_example_test.go) - Ring Hash example
+- [`maglev_example_test.go`](./lb/examples/maglev_example_test.go) - Maglev example
+
+## Run Tests
+
+```bash
+go test ./... -v
+go test ./... -race
+```
+
+## Benchmark
+
+```bash
+go test -bench=. -benchmem ./lb/...
+```
+
+## Learn More
+
+- DeepWiki (full guides and architecture): <https://deepwiki.com/shengyanli1982/go-loadbalancer>
+- Go API reference: <https://pkg.go.dev/github.com/shengyanli1982/go-loadbalancer>
+
+## License
+
+[MIT](./LICENSE)

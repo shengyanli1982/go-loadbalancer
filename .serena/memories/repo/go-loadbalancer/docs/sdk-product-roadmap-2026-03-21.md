@@ -1,0 +1,1 @@
+docs/sdk-product-roadmap.md 已更新。路线图继续聚焦 SDK 产品化，而非网关化或控制面化。当前推荐顺序保持为：P0 做官方场景 Profile、Quick Start 重构、NodeSnapshot 状态契约、决策解释与接入 Checklist；P1 做 Typed Plugin Config、Failure Model、Profile + Override、生产接入指南、版本与兼容策略；P2 仅保留 Replay / Compare Toolkit、Observability 指南、Plugin Developer Kit。原“官方 Integration Pattern”能力已从 Milestone 3、P2 详节、矩阵与 Phase 4 中移除。

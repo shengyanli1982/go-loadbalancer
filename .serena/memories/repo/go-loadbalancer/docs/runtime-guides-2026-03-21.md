@@ -1,0 +1,1 @@
+2026-03-21 新增三份运行/治理文档：`docs/failure-model.md`、`docs/production-checklist.md`、`docs/versioning-policy.md`。内容严格基于当前代码真相：failure model 描述 filter/algorithm/policy/objective/fallback 的直接失败与回退行为；production checklist 覆盖输入状态、路由配置、LLM 场景和 explain/telemetry 上线前检查；versioning policy 说明当前稳定面、扩展接口策略和仍在演进中的区域（尤其是 typed plugin config 仅 objective 样板）。README 已增加文档入口链接。

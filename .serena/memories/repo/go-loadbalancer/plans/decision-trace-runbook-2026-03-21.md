@@ -1,0 +1,1 @@
+新增 runbook `docs/superpowers/plans/2026-03-21-decision-trace-runbook.md`，用于跟踪最小结构化 explain 能力落地。执行策略：先写 `RouteWithTrace` 成功/ fallback 两类失败测试观察 RED，再新增 `ReasonCode`/`DecisionTrace` 契约与 `TraceBalancer` 扩展接口，最后补 README 示例并做全量验证。runbook 所有 checkbox 已在执行完成后勾选。
