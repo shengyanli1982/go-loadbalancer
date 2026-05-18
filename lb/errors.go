@@ -1,5 +1,7 @@
 package lb
 
+import "fmt"
+
 // 错误码定义
 const (
 	ErrCodeNilBackends     = 1001 // 后端列表为空或nil的错误码
@@ -17,7 +19,7 @@ type Error struct {
 
 // Error 实现 error 接口的 Error 方法
 func (e *Error) Error() string {
-	return e.Message
+	return fmt.Sprintf("[lb:%d] %s", e.Code, e.Message)
 }
 
 // Unwrap 实现 error 接口的 Unwrap 方法，用于错误链追溯

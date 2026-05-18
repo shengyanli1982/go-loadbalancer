@@ -1,38 +1,37 @@
 package lb
 
 import (
+	"encoding/binary"
 	"sync"
 )
 
-// Maglev 算法默认表大小
 const (
-	DefaultMaglevTableSize = 65537
+	DefaultMaglevTableSize = 65537 // Maglev 表默认大小（质数）
 )
 
-// maglev 实现 Maglev 负载均衡算法
-// 一种基于查找表的一致性哈希算法，具有更好的分布均匀性
+// maglev 实现 Maglev 一致性哈希算法
+// 特点：Google 论文实现，O(1) 查找速度，空间效率高
+// 原理：使用查找表（lookup table）实现快速路由
 type maglev struct {
-	mu        sync.RWMutex // 读写锁，保证并发安全
-	table     []int        // 查找表，存储后端索引
-	backends  []Backend    // 后端服务器列表
-	tableSize int          // 表大小
-	n         int          // 后端数量
+	mu        sync.RWMutex
+	table     []int     // 查找表，大小为 tableSize
+	backends  []Backend // 缓存后端列表
+	tableSize int       // 表大小
+	n         int       // 后端数量
 }
 
-// MaglevOptions 配置 Maglev 算法的选项
+// MaglevOptions 配置选项
 type MaglevOptions struct {
-	TableSize int // 查找表大小
+	TableSize int // 查找表大小，应为质数以获得更好的分布
 }
 
-// MaglevSelector 定义 Maglev 选择器的接口
-// 继承自 Selector 和 HashSelector
+// MaglevSelector 接口，同时支持 Select 和 SelectByHash
 type MaglevSelector interface {
 	Selector
 	HashSelector
 }
 
-// NewMaglev 创建新的 Maglev 负载均衡选择器
-// 如果未指定选项或表大小无效，使用默认值
+// NewMaglev 创建 Maglev 选择器
 func NewMaglev(opts *MaglevOptions) MaglevSelector {
 	size := DefaultMaglevTableSize
 	if opts != nil && opts.TableSize > 0 {
@@ -43,16 +42,27 @@ func NewMaglev(opts *MaglevOptions) MaglevSelector {
 	}
 }
 
-// Select 选择第一个后端（未实现真正的选择逻辑）
+// Select 随机选择一个后端（使用 Maglev 算法）
+// 使用随机 key 调用 SelectByHash
 func (m *maglev) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
 	}
-	return backends[0]
+	rng := globalRNG()
+	rng.mu.Lock()
+	randomKey := rng.rng.Int63()
+	rng.mu.Unlock()
+	var keyBuf [8]byte
+	binary.BigEndian.PutUint64(keyBuf[:], uint64(randomKey))
+	return m.SelectByHash(backends, keyBuf[:])
 }
 
-// SelectByHash 根据哈希键选择后端服务器
-// 使用 Maglev 算法通过查找表快速定位后端
+// SelectByHash 使用 Maglev 算法选择一个后端
+// 算法：
+// 1. 计算 key 的哈希值
+// 2. 取模表大小得到索引
+// 3. 从查找表中获取对应的后端索引
+// 优化：使用字符串比较检测后端变化，仅在变化时重建查找表
 func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 	if len(backends) == 0 {
 		return nil
@@ -61,43 +71,37 @@ func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 		return backends[0]
 	}
 
-	// 尝试获取读锁检查表是否有效
+	// 快速路径：表已构建且后端未变化
 	m.mu.RLock()
-	tableValid := !m.needsRebuild(backends) && m.table != nil
+	if m.table != nil && !m.needsRebuild(backends) {
+		h := hash64(key)
+		idx := h % uint64(m.tableSize)
+		result := m.table[idx]
+		m.mu.RUnlock()
+		if result >= 0 && result < len(backends) {
+			return backends[result]
+		}
+		return backends[0]
+	}
 	m.mu.RUnlock()
 
-	// 如果表无效，需要重建
-	if !tableValid {
-		m.mu.Lock()
-		if m.needsRebuild(backends) {
-			m.buildTable(backends)
-		}
-		m.mu.Unlock()
+	// 慢速路径：需要重建查找表
+	m.mu.Lock()
+	if m.needsRebuild(backends) {
+		m.buildTable(backends)
 	}
-
-	// 计算哈希值并查表
-	hash := hash64(key)
-	idx := int(hash % uint64(m.tableSize))
-	if idx < 0 {
-		idx = -idx % m.tableSize
-	}
-	if idx >= len(m.table) {
-		idx = idx % m.tableSize
-	}
-	if idx < 0 {
-		idx = 0
-	}
-
-	// 从表中获取后端索引
+	h := hash64(key)
+	idx := h % uint64(m.tableSize)
 	result := m.table[idx]
+	m.mu.Unlock()
 	if result >= 0 && result < len(backends) {
 		return backends[result]
 	}
 	return backends[0]
 }
 
-// needsRebuild 检查是否需要重建查找表
-// 当后端列表发生变化时需要重建
+// needsRebuild 检测是否需要重建查找表
+// 比较后端列表长度和每个后端的地址
 func (m *maglev) needsRebuild(backends []Backend) bool {
 	if m.table == nil || len(m.backends) != len(backends) {
 		return true
@@ -111,59 +115,45 @@ func (m *maglev) needsRebuild(backends []Backend) bool {
 }
 
 // buildTable 构建 Maglev 查找表
-// 使用轮询和偏移算法为每个后端分配表中的位置
+// 算法：为每个后端计算 offset 和 skip，使用轮询填充算法
+// 参考 Google 论文 "Maglev: A Fast and Reliable Software Network Load Balancer"
 func (m *maglev) buildTable(backends []Backend) {
 	m.backends = make([]Backend, len(backends))
 	copy(m.backends, backends)
 	m.n = len(backends)
 
-	// 如果没有后端，清空表
 	if m.n == 0 {
 		m.table = nil
 		return
 	}
 
-	// 初始化查找表，所有位置初始化为-1
 	m.table = make([]int, m.tableSize)
 	for i := range m.table {
 		m.table[i] = -1
 	}
 
-	offset := make([]int, m.n) // 每个后端的偏移量
-	skip := make([]bool, m.n)  // 标记后端是否已完成分配
-	pos := 0
+	// 为每个后端计算 offset 和 skip
+	offsets := make([]int, m.n)
+	skips := make([]int, m.n)
+	for i, b := range backends {
+		offsets[i] = int(hash64([]byte("offset:"+b.Address())) % uint64(m.tableSize))
+		skips[i] = int(hash64([]byte("skip:"+b.Address()))%uint64(m.tableSize-1)) + 1
+	}
 
-	// 填充查找表
+	// 轮询填充算法
+	next := make([]int, m.n)
+
 	for filled := 0; filled < m.tableSize; {
 		for i := 0; i < m.n; i++ {
-			if skip[i] {
-				continue
-			}
-			// 计算候选位置
-			candidate := (offset[i] + pos) % m.tableSize
-			if candidate < 0 {
-				candidate = -candidate % m.tableSize
-			}
-			// 如果位置空闲，分配给当前后端
-			if m.table[candidate] == -1 {
-				m.table[candidate] = i
+			c := (offsets[i] + next[i]*skips[i]) % m.tableSize
+			next[i]++
+			if m.table[c] < 0 {
+				m.table[c] = i
 				filled++
-				offset[i] = candidate
-				if offset[i] >= m.tableSize {
-					skip[i] = true
-				}
-			} else {
-				// 位置已被占用，尝试下一个偏移
-				offset[i]++
-				if offset[i] >= m.tableSize {
-					skip[i] = true
+				if filled >= m.tableSize {
+					break
 				}
 			}
-		}
-		pos++
-		// 防止无限循环
-		if pos > m.tableSize*m.n {
-			break
 		}
 	}
 }

@@ -1,60 +1,76 @@
 package lb
 
 import (
+	"encoding/binary"
+	"fmt"
 	"sort"
+	"sync"
 )
 
-// 虚拟节点数量，用于增加哈希分布的均匀性
-const (
-	VirtualNodes = 100
-)
-
-// ringHash 实现一致性哈希负载均衡算法（也称为环形哈希）
-// 通过将后端映射到哈希环上的位置，实现负载的分发
+// ringHash 实现一致性哈希（Ring Hash/Consistent Hash）算法
+// 特点：后端节点变化时，只影响少量请求的路由，最小化迁移
+// 原理：将后端映射到哈希环上，使用虚拟节点提高分布均匀性
 type ringHash struct {
-	ring     []uint64           // 哈希环，存储排序后的哈希值
-	backends []Backend          // 后端服务器列表
-	nodeMap  map[uint64]Backend // 哈希值到后端的映射
-	ringSize int                // 哈希环大小
+	mu                  sync.RWMutex
+	ring                []uint64           // 哈希环，存储虚拟节点的哈希值（有序）
+	backends            []Backend          // 缓存后端列表
+	nodeMap             map[uint64]Backend // 哈希值到后端的映射
+	ringSize            int                // 哈希环大小
+	virtualNodes        int                // 虚拟节点数量
+	backendsFingerprint uint64             // 后端列表指纹，用于快速检测变化
 }
 
-// RingHashOptions 配置一致性哈希算法的选项
+// RingHashOptions 配置选项
 type RingHashOptions struct {
-	RingSize     int // 哈希环大小
-	VirtualNodes int // 每个后端的虚拟节点数量
+	RingSize     int // 哈希环大小（已废弃，使用默认值）
+	VirtualNodes int // 虚拟节点数量，越多分布越均匀，但占用更多内存
 }
 
-// RingHashSelector 定义一致性哈希选择器的接口
-// 继承自 Selector 和 HashSelector
+// RingHashSelector 接口，同时支持 Select 和 SelectByHash
 type RingHashSelector interface {
 	Selector
 	HashSelector
 }
 
-// NewRingHash 创建新的一致性哈希负载均衡选择器
-// 如果未指定选项或选项值无效，使用默认值
+// NewRingHash 创建一致性哈希选择器
 func NewRingHash(opts *RingHashOptions) RingHashSelector {
 	r := &ringHash{
-		ringSize: DefaultRingSize,
-		nodeMap:  make(map[uint64]Backend),
+		ringSize:     DefaultRingSize,
+		virtualNodes: DefaultVirtualNodes,
+		nodeMap:      make(map[uint64]Backend),
 	}
-	// 验证并设置自定义环大小
-	if opts != nil && opts.RingSize >= MinRingSize && opts.RingSize <= MaxRingSize {
-		r.ringSize = opts.RingSize
+	if opts != nil {
+		if opts.RingSize >= MinRingSize && opts.RingSize <= MaxRingSize {
+			r.ringSize = opts.RingSize
+		}
+		if opts.VirtualNodes > 0 {
+			r.virtualNodes = opts.VirtualNodes
+		}
 	}
 	return r
 }
 
-// Select 选择第一个后端（未实现真正的选择逻辑）
+// Select 随机选择一个后端（使用一致性哈希）
+// 使用随机 key 调用 SelectByHash
 func (r *ringHash) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
 	}
-	return backends[0]
+	rng := globalRNG()
+	rng.mu.Lock()
+	randomKey := rng.rng.Int63()
+	rng.mu.Unlock()
+	var keyBuf [8]byte
+	binary.BigEndian.PutUint64(keyBuf[:], uint64(randomKey))
+	return r.SelectByHash(backends, keyBuf[:])
 }
 
-// SelectByHash 根据哈希键选择后端服务器
-// 如果后端列表发生变化或哈希环为空，会重新构建哈希环
+// SelectByHash 使用一致性哈希选择一个后端
+// 算法：
+// 1. 计算 key 的哈希值
+// 2. 在哈希环上二分查找第一个大于等于该哈希值的位置
+// 3. 返回该位置对应的后端
+// 优化：使用后端指纹缓存，仅在后端列表变化时重建哈希环
 func (r *ringHash) SelectByHash(backends []Backend, key []byte) Backend {
 	if len(backends) == 0 {
 		return nil
@@ -63,59 +79,66 @@ func (r *ringHash) SelectByHash(backends []Backend, key []byte) Backend {
 		return backends[0]
 	}
 
-	// 如果需要，重新构建哈希环
-	if len(r.ring) == 0 || !r.backendsEqual(backends) {
-		r.buildRing(backends)
-	}
+	fp := computeBackendsFingerprint(backends)
 
-	// 计算哈希值并查找对应位置
+	// 快速路径：指纹匹配且环已构建，直接查找
+	r.mu.RLock()
+	if fp == r.backendsFingerprint && len(r.ring) > 0 {
+		h := hash64(key)
+		idx := sort.Search(len(r.ring), func(i int) bool {
+			return r.ring[i] >= h
+		})
+		if idx >= len(r.ring) {
+			idx = 0
+		}
+		result := r.nodeMap[r.ring[idx]]
+		r.mu.RUnlock()
+		return result
+	}
+	r.mu.RUnlock()
+
+	// 慢速路径：需要重建哈希环
+	r.mu.Lock()
+	if fp != r.backendsFingerprint || len(r.ring) == 0 {
+		r.buildRing(backends)
+		r.backendsFingerprint = fp
+	}
 	h := hash64(key)
 	idx := sort.Search(len(r.ring), func(i int) bool {
 		return r.ring[i] >= h
 	})
-
-	// 环形结构，如果超出范围则从0开始
 	if idx >= len(r.ring) {
 		idx = 0
 	}
-
-	return r.nodeMap[r.ring[idx]]
+	result := r.nodeMap[r.ring[idx]]
+	r.mu.Unlock()
+	return result
 }
 
-// buildRing 构建一致性哈希环
-// 为每个后端创建多个虚拟节点，使哈希分布更加均匀
+// buildRing 构建哈希环
+// 为每个后端创建 virtualNodes 个虚拟节点，将它们添加到环上
 func (r *ringHash) buildRing(backends []Backend) {
 	r.backends = make([]Backend, len(backends))
 	copy(r.backends, backends)
 
-	r.ring = make([]uint64, 0, len(backends)*VirtualNodes)
+	r.ring = make([]uint64, 0, len(backends)*r.virtualNodes)
 	r.nodeMap = make(map[uint64]Backend)
 
 	// 为每个后端创建虚拟节点
 	for _, b := range backends {
-		for i := 0; i < VirtualNodes; i++ {
-			// 使用后端地址和虚拟节点索引生成唯一哈希键
-			nodeKey := hash64([]byte(b.Address() + ":" + string(rune(i))))
-			r.ring = append(r.ring, nodeKey)
-			r.nodeMap[nodeKey] = b
+		for i := 0; i < r.virtualNodes; i++ {
+			nodeKey := fmt.Sprintf("%s:%d", b.Address(), i)
+			h := hash64String(nodeKey)
+			// 避免哈希冲突
+			if _, exists := r.nodeMap[h]; !exists {
+				r.ring = append(r.ring, h)
+				r.nodeMap[h] = b
+			}
 		}
 	}
 
-	// 对哈希环进行排序
+	// 对环进行排序，便于二分查找
 	sort.Slice(r.ring, func(i, j int) bool {
 		return r.ring[i] < r.ring[j]
 	})
-}
-
-// backendsEqual 检查后端列表是否与之前相同
-func (r *ringHash) backendsEqual(backends []Backend) bool {
-	if len(backends) != len(r.backends) {
-		return false
-	}
-	for i, b := range backends {
-		if b.Address() != r.backends[i].Address() {
-			return false
-		}
-	}
-	return true
 }
