@@ -1,0 +1,1 @@
+docs/sdk-product-prd.md 已更新。文档仍保持 SDK 边界不变，目标是提升 adoption、解释性、信任感与长期演进能力。当前 PRD 的后续储备能力仅保留 replay / compare toolkit、observability guide、plugin developer kit；已明确移除“官方 integration pattern”方向，不再把外部状态接入样板作为官方产品路线。

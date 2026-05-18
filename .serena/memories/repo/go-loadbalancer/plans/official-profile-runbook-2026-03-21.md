@@ -1,0 +1,1 @@
+新增 runbook `docs/superpowers/plans/2026-03-21-official-profile-runbook.md`，用于跟踪 P0 官方命名 profile 落地。计划分为四块：RED 测试锁定语义、GREEN 实现 official profile 入口、README/basic-routing 改为 profile-first、全量验证。该 runbook 已在执行后将所有 checkbox 勾为完成状态。
