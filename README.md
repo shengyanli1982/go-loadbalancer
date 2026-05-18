@@ -2,8 +2,6 @@
 
 # A2X Load Balancer
 
-![Logo](assets/logo.png)
-
 **Production-ready load balancing algorithm library for Go services, providing efficient traffic distribution.**
 
 </div>
