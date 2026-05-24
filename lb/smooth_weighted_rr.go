@@ -11,7 +11,7 @@ type smoothWeightedRR struct {
 	currentWeight   []int // 当前权重，随选择动态变化
 	effectiveWeight []int // 有效权重（固定）
 	totalWeight     int   // 总权重
-	backendsLen     int   // 后端列表长度
+	backendsFP      uint64
 }
 
 // NewSmoothWeightedRR 创建平滑加权轮询选择器
@@ -31,8 +31,19 @@ func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 检测后端列表是否变化，如果是则重新初始化
-	if s.backendsLen != len(backends) {
+	fp := uint64(0)
+	for i, b := range backends {
+		wb, ok := b.(WeightedBackend)
+		w := 1
+		if ok {
+			wt := wb.Weight()
+			if wt > 0 {
+				w = wt
+			}
+		}
+		fp ^= hash64([]byte(b.Address())) + uint64(i)*0x9e3779b97f4a7c15 + uint64(w)
+	}
+	if s.backendsFP != fp {
 		s.backends = make([]Backend, len(backends))
 		s.currentWeight = make([]int, len(backends))
 		s.effectiveWeight = make([]int, len(backends))
@@ -51,7 +62,7 @@ func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 			s.currentWeight[i] = 0
 			s.totalWeight += w
 		}
-		s.backendsLen = len(backends)
+		s.backendsFP = fp
 	}
 
 	// 找到当前权重最大的后端
