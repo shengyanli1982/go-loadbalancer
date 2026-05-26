@@ -1,6 +1,8 @@
 package lb
 
 import (
+	"encoding/binary"
+
 	"github.com/cespare/xxhash/v2"
 )
 
@@ -20,7 +22,11 @@ func hash64String(data string) uint64 {
 func computeBackendsFingerprint(backends []Backend) uint64 {
 	h := xxhash.New()
 	for _, b := range backends {
-		h.WriteString(b.Address())
+		addr := b.Address()
+		var lenBuf [8]byte
+		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(addr)))
+		h.Write(lenBuf[:])
+		h.WriteString(addr)
 	}
 	return h.Sum64()
 }

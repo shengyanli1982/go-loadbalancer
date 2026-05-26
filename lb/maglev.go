@@ -2,6 +2,7 @@ package lb
 
 import (
 	"encoding/binary"
+	"math"
 	"sync"
 )
 
@@ -34,7 +35,7 @@ type MaglevSelector interface {
 // NewMaglev 创建 Maglev 选择器
 func NewMaglev(opts *MaglevOptions) MaglevSelector {
 	size := DefaultMaglevTableSize
-	if opts != nil && opts.TableSize > 0 {
+	if opts != nil && opts.TableSize > 0 && isPrime(opts.TableSize) {
 		size = opts.TableSize
 	}
 	return &maglev{
@@ -156,4 +157,23 @@ func (m *maglev) buildTable(backends []Backend) {
 			}
 		}
 	}
+}
+
+func isPrime(n int) bool {
+	if n < 2 {
+		return false
+	}
+	if n < 4 {
+		return true
+	}
+	if n%2 == 0 || n%3 == 0 {
+		return false
+	}
+	limit := int(math.Sqrt(float64(n)))
+	for i := 5; i <= limit; i += 6 {
+		if n%i == 0 || n%(i+2) == 0 {
+			return false
+		}
+	}
+	return true
 }

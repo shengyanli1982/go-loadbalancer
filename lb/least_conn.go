@@ -7,10 +7,10 @@ import "sync"
 // 适用：后端处理时间差异较大的场景
 type leastConn struct {
 	mu                  sync.Mutex
-	connections         map[string]int   // 记录每个后端的当前连接数
-	rrCounter           map[string]int64 // 轮询计数器，用于连接数相同时的决策
-	backendsFingerprint uint64           // 后端列表指纹，用于快速检测变化
-	hasWeighted         bool             // 是否有加权后端
+	connections         map[string]int
+	rrIndex             int64
+	backendsFingerprint uint64
+	hasWeighted         bool
 }
 
 // LeastConnReleaser 接口，用于在请求完成后释放连接
@@ -28,7 +28,6 @@ type LeastConnReleaser interface {
 func NewLeastConn() Selector {
 	return &leastConn{
 		connections: make(map[string]int),
-		rrCounter:   make(map[string]int64),
 	}
 }
 
@@ -65,10 +64,8 @@ func (l *leastConn) Select(backends []Backend) Backend {
 			selected = b
 			selectedAddr = addr
 		} else if score == minScore {
-			// 连接数相同时，使用轮询计数器决定
-			l.rrCounter[addr]++
-			l.rrCounter[selectedAddr]++
-			if l.rrCounter[addr] < l.rrCounter[selectedAddr] {
+			l.rrIndex++
+			if l.rrIndex%2 == 0 {
 				minScore = score
 				selected = b
 				selectedAddr = addr
@@ -104,11 +101,6 @@ func (l *leastConn) cleanupStaleEntries(backends []Backend) {
 	for addr := range l.connections {
 		if _, ok := active[addr]; !ok {
 			delete(l.connections, addr)
-		}
-	}
-	for addr := range l.rrCounter {
-		if _, ok := active[addr]; !ok {
-			delete(l.rrCounter, addr)
 		}
 	}
 }

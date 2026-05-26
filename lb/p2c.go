@@ -95,13 +95,9 @@ func (p *p2c) Select(backends []Backend) Backend {
 
 // getOrCreateLoad 获取或创建后端的负载计数器
 func (p *p2c) getOrCreateLoad(addr string) *atomic.Int64 {
-	if v, ok := p.loads.Load(addr); ok {
-		return v.(*atomic.Int64)
-	}
 	newLoad := &atomic.Int64{}
-	newLoad.Store(0)
-	p.loads.Store(addr, newLoad)
-	return newLoad
+	v, _ := p.loads.LoadOrStore(addr, newLoad)
+	return v.(*atomic.Int64)
 }
 
 // applyDecay 对所有后端的负载进行指数衰减
