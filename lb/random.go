@@ -1,9 +1,8 @@
 package lb
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"sync"
-	"time"
 )
 
 // random 实现随机负载均衡算法
@@ -16,7 +15,7 @@ type random struct {
 // NewRandom 创建随机选择器（使用当前时间作为随机种子）
 func NewRandom() Selector {
 	return &random{
-		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng: rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 	}
 }
 
@@ -24,7 +23,7 @@ func NewRandom() Selector {
 // 可用于测试场景，确保随机结果可复现
 func NewRandomWithSeed(seed int64) Selector {
 	return &random{
-		rng: rand.New(rand.NewSource(seed)),
+		rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))),
 	}
 }
 
@@ -34,7 +33,7 @@ func (r *random) Select(backends []Backend) Backend {
 		return nil
 	}
 	r.mu.Lock()
-	idx := r.rng.Intn(len(backends))
+	idx := r.rng.IntN(len(backends))
 	r.mu.Unlock()
 	return backends[idx]
 }

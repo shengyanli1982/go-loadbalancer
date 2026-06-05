@@ -7,9 +7,9 @@ import (
 func TestWeightedRR_Select(t *testing.T) {
 	selector := NewWeightedRR()
 	backends := []Backend{
-		&simpleWeightedBackend{addr: "a", weight: 1},
-		&simpleWeightedBackend{addr: "b", weight: 1},
-		&simpleWeightedBackend{addr: "c", weight: 1},
+		NewWeightedBackend("a", 1),
+		NewWeightedBackend("b", 1),
+		NewWeightedBackend("c", 1),
 	}
 
 	result := selector.Select(backends)
@@ -37,8 +37,8 @@ func TestWeightedRR_EmptyBackends(t *testing.T) {
 func TestWeightedRR_WeightedDistribution(t *testing.T) {
 	selector := NewWeightedRR()
 	backends := []Backend{
-		&simpleWeightedBackend{addr: "a", weight: 1},
-		&simpleWeightedBackend{addr: "b", weight: 3},
+		NewWeightedBackend("a", 1),
+		NewWeightedBackend("b", 3),
 	}
 	picks := 10000
 
@@ -59,7 +59,7 @@ func TestWeightedRR_WeightedDistribution(t *testing.T) {
 func TestWeightedRR_SingleBackend(t *testing.T) {
 	selector := NewWeightedRR()
 	backends := []Backend{
-		&simpleWeightedBackend{addr: "a", weight: 5},
+		NewWeightedBackend("a", 5),
 	}
 
 	for i := 0; i < 10; i++ {
@@ -76,8 +76,8 @@ func TestWeightedRR_SingleBackend(t *testing.T) {
 func TestWeightedRR_FallbackToWeight1(t *testing.T) {
 	selector := NewWeightedRR()
 	backends := []Backend{
-		&testBackend{addr: "a"},
-		&testBackend{addr: "b"},
+		NewBackend("a"),
+		NewBackend("b"),
 	}
 	picks := 100
 

@@ -1,34 +1,27 @@
 package lb
 
 import (
-	"sync"
 	"testing"
 )
 
+// benchmarkConcurrentSelect 使用 b.RunParallel 实现真正的并发 Benchmark
+// 修正说明：原实现对每次迭代只启动一个 goroutine 然后 wg.Wait()，实际是串行执行。
+// 改用 b.RunParallel 让多个 P 并行执行 Select，模拟真实并发负载。
 func benchmarkConcurrentSelect(b *testing.B, selector Selector, backends []Backend) {
-	var wg sync.WaitGroup
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
 			selector.Select(backends)
-		}()
-		wg.Wait()
-	}
+		}
+	})
 }
 
+// benchmarkConcurrentSelectByHash 使用 b.RunParallel 实现真正的并发 Hash Benchmark
 func benchmarkConcurrentSelectByHash(b *testing.B, selector HashSelector, backends []Backend, key []byte) {
-	var wg sync.WaitGroup
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
 			selector.SelectByHash(backends, key)
-		}()
-		wg.Wait()
-	}
+		}
+	})
 }
 
 func BenchmarkConcurrent_RoundRobin(b *testing.B) {

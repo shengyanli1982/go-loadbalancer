@@ -2,16 +2,22 @@ package lb
 
 import "sync"
 
-// smoothWeightedRR 实现平滑加权轮询算法（Nginx 风格）
-// 特点：权重越高被选中的概率越大，但不会连续选中同一后端
-// 原理：每次选择后，当前权重会减去总权重，实现平滑分布
+// smoothWeightedRR 实现平滑加权轮询算法（nginx 风格）
+// 算法原理（对标 nginx ngx_http_upstream_get_peer）：
+//   - 每个后端维护 currentWeight 和 effectiveWeight
+//   - 每轮：currentWeight += effectiveWeight，选 currentWeight 最大的后端
+//   - 选中后：currentWeight -= totalWeight
+//
+// 效果：权重高的后端更频繁被选中，但不会连续选中同一后端
 type smoothWeightedRR struct {
-	mu              sync.Mutex
-	backends        []Backend
-	currentWeight   []int // 当前权重，随选择动态变化
-	effectiveWeight []int // 有效权重（固定）
-	totalWeight     int   // 总权重
-	backendsFP      uint64
+	mu                  sync.Mutex
+	backends            []Backend // 缓存后端列表
+	currentWeight       []int     // 当前权重，每轮动态变化
+	effectiveWeight     []int     // 有效权重（初始化时固定）
+	totalWeight         int       // 所有 effectiveWeight 之和
+	backendsFingerprint uint64    // 后端列表指纹（含权重），变化时触发重建
+	backendsSlicePtr    uintptr   // 后端 slice 底层数组地址，用于快速缓存检测
+	backendsSliceLen    int       // 后端 slice 长度，配合指针做快速缓存检测
 }
 
 // NewSmoothWeightedRR 创建平滑加权轮询选择器
@@ -20,9 +26,7 @@ func NewSmoothWeightedRR() Selector {
 }
 
 // Select 使用平滑加权轮询算法选择一个后端
-// 算法：每个后端的当前权重等于有效权重加上一次选择后的值，
-//
-//	每次选择当前权重最大的后端，然后减去总权重
+// 对标 nginx ngx_http_upstream_get_peer 中的 SWRR 核心循环
 func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
@@ -31,41 +35,18 @@ func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	fp := uint64(0)
-	for i, b := range backends {
-		wb, ok := b.(WeightedBackend)
-		w := 1
-		if ok {
-			wt := wb.Weight()
-			if wt > 0 {
-				w = wt
-			}
+	// 快速路径：同一个 slice → 跳过 fingerprint 计算
+	ptr := backendsSlicePtr(backends)
+	if !(ptr == s.backendsSlicePtr && len(backends) == s.backendsSliceLen) {
+		fp := computeWeightedFingerprint(backends)
+		if fp != s.backendsFingerprint {
+			s.rebuild(backends, fp)
 		}
-		fp ^= hash64([]byte(b.Address())) + uint64(i)*0x9e3779b97f4a7c15 + uint64(w)
-	}
-	if s.backendsFP != fp {
-		s.backends = make([]Backend, len(backends))
-		s.currentWeight = make([]int, len(backends))
-		s.effectiveWeight = make([]int, len(backends))
-		s.totalWeight = 0
-		for i, b := range backends {
-			s.backends[i] = b
-			wb, ok := b.(WeightedBackend)
-			w := 1
-			if ok {
-				wt := wb.Weight()
-				if wt > 0 {
-					w = wt
-				}
-			}
-			s.effectiveWeight[i] = w
-			s.currentWeight[i] = 0
-			s.totalWeight += w
-		}
-		s.backendsFP = fp
+		s.backendsSlicePtr = ptr
+		s.backendsSliceLen = len(backends)
 	}
 
-	// 找到当前权重最大的后端
+	// SWRR 核心：currentWeight += effectiveWeight，选最大，减 totalWeight
 	maxWeight := 0
 	selected := 0
 	for i := range s.currentWeight {
@@ -75,9 +56,37 @@ func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 			selected = i
 		}
 	}
-
-	// 选中后减去总权重，实现平滑
 	s.currentWeight[selected] -= s.totalWeight
 
 	return s.backends[selected]
+}
+
+// rebuild 重新初始化后端权重数据
+// 复用已有切片容量，避免不必要的堆分配
+func (s *smoothWeightedRR) rebuild(backends []Backend, fp uint64) {
+	n := len(backends)
+	if cap(s.backends) >= n {
+		s.backends = s.backends[:n]
+	} else {
+		s.backends = make([]Backend, n)
+	}
+	if cap(s.currentWeight) >= n {
+		s.currentWeight = s.currentWeight[:n]
+	} else {
+		s.currentWeight = make([]int, n)
+	}
+	if cap(s.effectiveWeight) >= n {
+		s.effectiveWeight = s.effectiveWeight[:n]
+	} else {
+		s.effectiveWeight = make([]int, n)
+	}
+	s.totalWeight = 0
+	for i, b := range backends {
+		w := getWeight(b)
+		s.backends[i] = b
+		s.effectiveWeight[i] = w
+		s.currentWeight[i] = 0
+		s.totalWeight += w
+	}
+	s.backendsFingerprint = fp
 }

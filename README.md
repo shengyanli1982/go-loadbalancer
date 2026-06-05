@@ -2,6 +2,8 @@
 
 # A2X Load Balancer
 
+![Logo](assets/logo.png)
+
 **Production-ready load balancing algorithm library for Go services, providing efficient traffic distribution.**
 
 </div>
@@ -27,7 +29,7 @@ When your service needs to distribute traffic across multiple backend instances,
 | ------------------------ | ----------------- | ----------- | ------------------------------------------------- |
 | **Round Robin**          | Round Robin       | ✓           | Backends have consistent performance              |
 | **Random**               | Probabilistic     | ✓           | Simple distribution, no state needed              |
-| **Weighted Round Robin** | Weighted          | ✗ (1 alloc) | Proportional distribution by weight               |
+| **Weighted Round Robin** | Weighted          | ✓           | Proportional distribution by weight               |
 | **Smooth Weighted RR**   | Smooth Weighted   | ✓           | Production environments needing even distribution |
 | **Least Connections**    | Least Connections | ✓           | Large variation in backend processing times       |
 | **P2C**                  | Dual Selection    | ✓           | Large-scale distributed systems                   |
@@ -51,17 +53,11 @@ import (
 	"github.com/shengyanli1982/go-loadbalancer/lb"
 )
 
-type backend struct {
-	addr string
-}
-
-func (b *backend) Address() string { return b.addr }
-
 func main() {
 	backends := []lb.Backend{
-		&backend{addr: "192.168.1.1:8080"},
-		&backend{addr: "192.168.1.2:8080"},
-		&backend{addr: "192.168.1.3:8080"},
+		lb.NewBackend("192.168.1.1:8080"),
+		lb.NewBackend("192.168.1.2:8080"),
+		lb.NewBackend("192.168.1.3:8080"),
 	}
 
 	// Basic selection
@@ -84,21 +80,13 @@ func main() {
 
 ### Weighted Backends
 
-Implement the `WeightedBackend` interface for weighted algorithms:
+Use `NewWeightedBackend` for weighted algorithms:
 
 ```go
-type weightedBackend struct {
-	addr   string
-	weight int
-}
-
-func (b *weightedBackend) Address() string { return b.addr }
-func (b *weightedBackend) Weight() int     { return b.weight }
-
 selector := lb.NewSmoothWeightedRR()
 backends := []lb.Backend{
-	&weightedBackend{addr: "192.168.1.1:8080", weight: 3},
-	&weightedBackend{addr: "192.168.1.2:8080", weight: 1},
+	lb.NewWeightedBackend("192.168.1.1:8080", 3),
+	lb.NewWeightedBackend("192.168.1.2:8080", 1),
 }
 ```
 
@@ -126,12 +114,12 @@ Benchmark results on Apple M1 Max (50-100 backends):
 | Random                   | 14    | 0    | 0         |
 | IP Hash                  | 15    | 0    | 0         |
 | URI Hash                 | 16    | 0    | 0         |
-| P2C                      | 107   | 0    | 0         |
-| Smooth Weighted RR       | 145   | 0    | 0         |
-| Maglev (SelectByHash)    | 162   | 0    | 0         |
-| Weighted RR              | 416   | 896  | 1         |
-| Ring Hash (SelectByHash) | 325   | 0    | 0         |
-| Least Connections        | 3700  | 0    | 0         |
+| P2C                      | 113   | 0    | 0         |
+| Maglev (SelectByHash)    | 175   | 0    | 0         |
+| Ring Hash (SelectByHash) | 331   | 0    | 0         |
+| Smooth Weighted RR       | 1771  | 0    | 0         |
+| Weighted RR              | 1660  | 0    | 0         |
+| Least Connections        | 2758  | 0    | 0         |
 
 ## Interface Design
 
@@ -145,11 +133,6 @@ type WeightedBackend interface {
 	Weight() int
 }
 
-type ConnBackend interface {
-	Backend
-	ActiveConnections() int
-}
-
 type Selector interface {
 	Select(backends []Backend) Backend
 }
@@ -158,7 +141,19 @@ type HashSelector interface {
 	SelectByHash(backends []Backend, key []byte) Backend
 }
 
+// Factory functions
+func NewBackend(address string) Backend
+func NewWeightedBackend(address string, weight int) WeightedBackend
 func SelectOrNil(s Selector, backends []Backend) Backend
+
+// Releaser interfaces (LeastConn, P2C)
+type LeastConnReleaser interface {
+	Release(backend Backend)
+}
+
+type P2CReleaser interface {
+	Release(backend Backend)
+}
 ```
 
 ## Examples

@@ -18,6 +18,8 @@ type ringHash struct {
 	ringSize            int                // 哈希环大小
 	virtualNodes        int                // 虚拟节点数量
 	backendsFingerprint uint64             // 后端列表指纹，用于快速检测变化
+	backendsSlicePtr    uintptr            // 后端 slice 底层数组地址，用于快速缓存检测
+	backendsSliceLen    int                // 后端 slice 长度，配合指针做快速缓存检测
 }
 
 // RingHashOptions 配置选项
@@ -58,10 +60,10 @@ func (r *ringHash) Select(backends []Backend) Backend {
 	}
 	rng := globalRNG()
 	rng.mu.Lock()
-	randomKey := rng.rng.Int63()
+	randomKey := rng.rng.Uint64()
 	rng.mu.Unlock()
 	var keyBuf [8]byte
-	binary.BigEndian.PutUint64(keyBuf[:], uint64(randomKey))
+	binary.BigEndian.PutUint64(keyBuf[:], randomKey)
 	return r.SelectByHash(backends, keyBuf[:])
 }
 
@@ -79,11 +81,10 @@ func (r *ringHash) SelectByHash(backends []Backend, key []byte) Backend {
 		return backends[0]
 	}
 
-	fp := computeBackendsFingerprint(backends)
-
-	// 快速路径：指纹匹配且环已构建，直接查找
+	// 快速路径：slice 指针匹配且环已构建 → 直接查找
+	ptr := backendsSlicePtr(backends)
 	r.mu.RLock()
-	if fp == r.backendsFingerprint && len(r.ring) > 0 {
+	if ptr == r.backendsSlicePtr && len(backends) == r.backendsSliceLen && len(r.ring) > 0 {
 		h := hash64(key)
 		idx := sort.Search(len(r.ring), func(i int) bool {
 			return r.ring[i] >= h
@@ -97,11 +98,14 @@ func (r *ringHash) SelectByHash(backends []Backend, key []byte) Backend {
 	}
 	r.mu.RUnlock()
 
-	// 慢速路径：需要重建哈希环
+	// 慢速路径：需要计算 fingerprint 并可能重建哈希环
+	fp := computeBackendsFingerprint(backends)
 	r.mu.Lock()
 	if fp != r.backendsFingerprint || len(r.ring) == 0 {
 		r.buildRing(backends)
 		r.backendsFingerprint = fp
+		r.backendsSlicePtr = ptr
+		r.backendsSliceLen = len(backends)
 	}
 	h := hash64(key)
 	idx := sort.Search(len(r.ring), func(i int) bool {
@@ -124,16 +128,26 @@ func (r *ringHash) buildRing(backends []Backend) {
 	r.ring = make([]uint64, 0, len(backends)*r.virtualNodes)
 	r.nodeMap = make(map[uint64]Backend)
 
-	// 为每个后端创建虚拟节点
+	// 为每个后端创建虚拟节点（使用 double-hashing 策略处理碰撞）
+	// 参考 Envoy Ring Hash 实现：h = h1 + j * h2（mod 2^64，uint64 自然溢出）
+	// h1 = hash(address#i), h2 = hash(address#i#skip)
+	// 由于 xxhash 64bit 碰撞概率极低（~2^-64），double-hashing 确保即使碰撞也能分散
 	for _, b := range backends {
 		for i := 0; i < r.virtualNodes; i++ {
-			nodeKey := fmt.Sprintf("%s:%d", b.Address(), i)
-			h := hash64String(nodeKey)
-			// 避免哈希冲突
-			if _, exists := r.nodeMap[h]; !exists {
-				r.ring = append(r.ring, h)
-				r.nodeMap[h] = b
+			nodeKey := fmt.Sprintf("%s#%d", b.Address(), i)
+			h1 := hash64String(nodeKey)
+			h2 := hash64String(nodeKey + "#skip")
+			h := h1
+			for {
+				if _, exists := r.nodeMap[h]; !exists {
+					break
+				}
+				// Double-hashing 线性探测：h = h1 + h2（uint64 自然溢出即 mod 2^64）
+				h = h1 + h2
+				h1 = h
 			}
+			r.ring = append(r.ring, h)
+			r.nodeMap[h] = b
 		}
 	}
 

@@ -2,7 +2,6 @@ package lb
 
 import (
 	"encoding/binary"
-	"math"
 	"sync"
 )
 
@@ -14,11 +13,14 @@ const (
 // 特点：Google 论文实现，O(1) 查找速度，空间效率高
 // 原理：使用查找表（lookup table）实现快速路由
 type maglev struct {
-	mu        sync.RWMutex
-	table     []int     // 查找表，大小为 tableSize
-	backends  []Backend // 缓存后端列表
-	tableSize int       // 表大小
-	n         int       // 后端数量
+	mu                  sync.RWMutex
+	table               []int     // 查找表，大小为 tableSize
+	backends            []Backend // 缓存后端列表
+	tableSize           int       // 表大小
+	n                   int       // 后端数量
+	backendsFingerprint uint64    // 后端列表指纹，替代逐地址比较
+	backendsSlicePtr    uintptr   // 后端 slice 底层数组地址，用于快速缓存检测
+	backendsSliceLen    int       // 后端 slice 长度，配合指针做快速缓存检测
 }
 
 // MaglevOptions 配置选项
@@ -35,7 +37,7 @@ type MaglevSelector interface {
 // NewMaglev 创建 Maglev 选择器
 func NewMaglev(opts *MaglevOptions) MaglevSelector {
 	size := DefaultMaglevTableSize
-	if opts != nil && opts.TableSize > 0 && isPrime(opts.TableSize) {
+	if opts != nil && opts.TableSize > 0 {
 		size = opts.TableSize
 	}
 	return &maglev{
@@ -51,10 +53,10 @@ func (m *maglev) Select(backends []Backend) Backend {
 	}
 	rng := globalRNG()
 	rng.mu.Lock()
-	randomKey := rng.rng.Int63()
+	randomKey := rng.rng.Uint64()
 	rng.mu.Unlock()
 	var keyBuf [8]byte
-	binary.BigEndian.PutUint64(keyBuf[:], uint64(randomKey))
+	binary.BigEndian.PutUint64(keyBuf[:], randomKey)
 	return m.SelectByHash(backends, keyBuf[:])
 }
 
@@ -63,7 +65,7 @@ func (m *maglev) Select(backends []Backend) Backend {
 // 1. 计算 key 的哈希值
 // 2. 取模表大小得到索引
 // 3. 从查找表中获取对应的后端索引
-// 优化：使用字符串比较检测后端变化，仅在变化时重建查找表
+// 优化：使用 slice 指针+指纹快速检测后端变化，仅在变化时重建查找表
 func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 	if len(backends) == 0 {
 		return nil
@@ -72,9 +74,10 @@ func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 		return backends[0]
 	}
 
-	// 快速路径：表已构建且后端未变化
+	// 快速路径：slice 指针匹配且表已构建 → 直接查找
+	ptr := backendsSlicePtr(backends)
 	m.mu.RLock()
-	if m.table != nil && !m.needsRebuild(backends) {
+	if m.table != nil && ptr == m.backendsSlicePtr && len(backends) == m.backendsSliceLen {
 		h := hash64(key)
 		idx := h % uint64(m.tableSize)
 		result := m.table[idx]
@@ -86,10 +89,14 @@ func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 	}
 	m.mu.RUnlock()
 
-	// 慢速路径：需要重建查找表
+	// 慢速路径：需要检查 fingerprint 并可能重建查找表
+	fp := computeBackendsFingerprint(backends)
 	m.mu.Lock()
-	if m.needsRebuild(backends) {
+	if m.table == nil || fp != m.backendsFingerprint || !(ptr == m.backendsSlicePtr && len(backends) == m.backendsSliceLen) {
 		m.buildTable(backends)
+		m.backendsFingerprint = fp
+		m.backendsSlicePtr = ptr
+		m.backendsSliceLen = len(backends)
 	}
 	h := hash64(key)
 	idx := h % uint64(m.tableSize)
@@ -99,20 +106,6 @@ func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 		return backends[result]
 	}
 	return backends[0]
-}
-
-// needsRebuild 检测是否需要重建查找表
-// 比较后端列表长度和每个后端的地址
-func (m *maglev) needsRebuild(backends []Backend) bool {
-	if m.table == nil || len(m.backends) != len(backends) {
-		return true
-	}
-	for i, b := range backends {
-		if m.backends[i].Address() != b.Address() {
-			return true
-		}
-	}
-	return false
 }
 
 // buildTable 构建 Maglev 查找表
@@ -157,23 +150,4 @@ func (m *maglev) buildTable(backends []Backend) {
 			}
 		}
 	}
-}
-
-func isPrime(n int) bool {
-	if n < 2 {
-		return false
-	}
-	if n < 4 {
-		return true
-	}
-	if n%2 == 0 || n%3 == 0 {
-		return false
-	}
-	limit := int(math.Sqrt(float64(n)))
-	for i := 5; i <= limit; i += 6 {
-		if n%i == 0 || n%(i+2) == 0 {
-			return false
-		}
-	}
-	return true
 }

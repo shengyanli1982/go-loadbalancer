@@ -9,9 +9,9 @@ import (
 func ExampleNewIPHash() {
 	selector := lb.NewIPHash()
 	backends := []lb.Backend{
-		&simpleBackend{addr: "192.168.1.1:8080"},
-		&simpleBackend{addr: "192.168.1.2:8080"},
-		&simpleBackend{addr: "192.168.1.3:8080"},
+		lb.NewBackend("192.168.1.1:8080"),
+		lb.NewBackend("192.168.1.2:8080"),
+		lb.NewBackend("192.168.1.3:8080"),
 	}
 
 	clientIP1 := []byte("10.0.0.1")
