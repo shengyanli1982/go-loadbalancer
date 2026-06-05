@@ -30,9 +30,9 @@ func TestConcurrent_RoundRobin(t *testing.T) {
 func TestConcurrent_WeightedRR(t *testing.T) {
 	selector := NewWeightedRR()
 	backends := []Backend{
-		&simpleWeightedBackend{addr: "a", weight: 1},
-		&simpleWeightedBackend{addr: "b", weight: 3},
-		&simpleWeightedBackend{addr: "c", weight: 2},
+		NewWeightedBackend("a", 1),
+		NewWeightedBackend("b", 3),
+		NewWeightedBackend("c", 2),
 	}
 	const goroutines = 20
 	const callsPerGoroutine = 50
@@ -56,9 +56,9 @@ func TestConcurrent_WeightedRR(t *testing.T) {
 func TestConcurrent_SmoothWeightedRR(t *testing.T) {
 	selector := NewSmoothWeightedRR()
 	backends := []Backend{
-		&simpleWeightedBackend{addr: "a", weight: 1},
-		&simpleWeightedBackend{addr: "b", weight: 3},
-		&simpleWeightedBackend{addr: "c", weight: 2},
+		NewWeightedBackend("a", 1),
+		NewWeightedBackend("b", 3),
+		NewWeightedBackend("c", 2),
 	}
 	const goroutines = 20
 	const callsPerGoroutine = 50

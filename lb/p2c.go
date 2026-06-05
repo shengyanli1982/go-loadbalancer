@@ -1,7 +1,7 @@
 package lb
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,7 +40,7 @@ func NewP2CWithOptions(opts *P2COptions) Selector {
 		decay = opts.Decay
 	}
 	p := &p2c{
-		rng:   rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:   rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 		decay: decay,
 	}
 	p.lastTime.Store(time.Now().UnixNano())
@@ -71,10 +71,10 @@ func (p *p2c) Select(backends []Backend) Backend {
 
 	// 随机选择两个不同的后端
 	p.mu.Lock()
-	idx1 := p.rng.Intn(len(backends))
-	idx2 := p.rng.Intn(len(backends))
+	idx1 := p.rng.IntN(len(backends))
+	idx2 := p.rng.IntN(len(backends))
 	for idx2 == idx1 {
-		idx2 = p.rng.Intn(len(backends))
+		idx2 = p.rng.IntN(len(backends))
 	}
 	p.mu.Unlock()
 
@@ -95,9 +95,15 @@ func (p *p2c) Select(backends []Backend) Backend {
 
 // getOrCreateLoad 获取或创建后端的负载计数器
 func (p *p2c) getOrCreateLoad(addr string) *atomic.Int64 {
+	if v, ok := p.loads.Load(addr); ok {
+		return v.(*atomic.Int64)
+	}
 	newLoad := &atomic.Int64{}
-	v, _ := p.loads.LoadOrStore(addr, newLoad)
-	return v.(*atomic.Int64)
+	v, loaded := p.loads.LoadOrStore(addr, newLoad)
+	if loaded {
+		return v.(*atomic.Int64)
+	}
+	return newLoad
 }
 
 // applyDecay 对所有后端的负载进行指数衰减

@@ -9,9 +9,9 @@ import (
 func ExampleNewURIHash() {
 	selector := lb.NewURIHash(nil)
 	backends := []lb.Backend{
-		&simpleBackend{addr: "192.168.1.1:8080"},
-		&simpleBackend{addr: "192.168.1.2:8080"},
-		&simpleBackend{addr: "192.168.1.3:8080"},
+		lb.NewBackend("192.168.1.1:8080"),
+		lb.NewBackend("192.168.1.2:8080"),
+		lb.NewBackend("192.168.1.3:8080"),
 	}
 
 	uri1 := []byte("/api/users")

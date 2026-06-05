@@ -3,18 +3,19 @@ package lb
 import "bytes"
 
 // uriHash 实现 URI 哈希负载均衡算法
-// 特点：相同 URI 请求路由到同一后端，提高缓存命中率
-// 适用：需要按请求 URI 进行一致性哈希的场景
+// 相同 URI 请求始终路由到同一后端，提高后端缓存命中率
+// 可选择包含或排除查询参数进行哈希计算
 type uriHash struct {
-	includeQuery bool // 是否包含查询参数
+	includeQuery bool // 是否在哈希计算中包含查询参数（?key=value）
 }
 
-// URIHashOptions 配置选项
+// URIHashOptions 配置 URI 哈希选择器的选项
 type URIHashOptions struct {
-	IncludeQuery bool // 是否在哈希计算中包含查询参数
+	IncludeQuery bool // true: 包含查询参数；false: 仅对路径部分哈希
 }
 
 // NewURIHash 创建 URI 哈希选择器
+// opts 为 nil 时默认包含查询参数
 func NewURIHash(opts *URIHashOptions) HashSelector {
 	h := &uriHash{}
 	if opts != nil {
@@ -25,8 +26,9 @@ func NewURIHash(opts *URIHashOptions) HashSelector {
 	return h
 }
 
-// SelectByHash 使用 URI 哈希算法选择一个后端
-// 算法：对 URI（可选择包含或排除查询参数）进行哈希，取模后端数量
+// SelectByHash 根据 URI 的哈希值选择后端
+// key 应为请求 URI 的字节表示（如 []byte("/api/users?page=1")）
+// 当 includeQuery 为 false 时，自动截取 ? 前的路径部分进行哈希
 func (h *uriHash) SelectByHash(backends []Backend, key []byte) Backend {
 	if len(backends) == 0 {
 		return nil
@@ -36,10 +38,8 @@ func (h *uriHash) SelectByHash(backends []Backend, key []byte) Backend {
 	}
 
 	hashKey := key
-	// 如果不包含查询参数，则只取 ? 前面的路径部分
 	if !h.includeQuery {
-		idx := bytes.IndexByte(key, '?')
-		if idx >= 0 {
+		if idx := bytes.IndexByte(key, '?'); idx >= 0 {
 			hashKey = key[:idx]
 		}
 	}

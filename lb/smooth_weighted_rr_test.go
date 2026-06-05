@@ -7,9 +7,9 @@ import (
 func TestSmoothWeightedRR_Select(t *testing.T) {
 	selector := NewSmoothWeightedRR()
 	backends := []Backend{
-		&simpleWeightedBackend{addr: "a", weight: 1},
-		&simpleWeightedBackend{addr: "b", weight: 2},
-		&simpleWeightedBackend{addr: "c", weight: 3},
+		NewWeightedBackend("a", 1),
+		NewWeightedBackend("b", 2),
+		NewWeightedBackend("c", 3),
 	}
 
 	result := selector.Select(backends)
@@ -37,8 +37,8 @@ func TestSmoothWeightedRR_EmptyBackends(t *testing.T) {
 func TestSmoothWeightedRR_Distribution(t *testing.T) {
 	selector := NewSmoothWeightedRR()
 	backends := []Backend{
-		&simpleWeightedBackend{addr: "a", weight: 1},
-		&simpleWeightedBackend{addr: "b", weight: 3},
+		NewWeightedBackend("a", 1),
+		NewWeightedBackend("b", 3),
 	}
 	picks := 10000
 

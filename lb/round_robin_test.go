@@ -4,18 +4,10 @@ import (
 	"testing"
 )
 
-type testBackend struct {
-	addr string
-}
-
-func (b *testBackend) Address() string {
-	return b.addr
-}
-
 func newTestBackends(addrs ...string) []Backend {
 	backends := make([]Backend, len(addrs))
 	for i, addr := range addrs {
-		backends[i] = &testBackend{addr: addr}
+		backends[i] = NewBackend(addr)
 	}
 	return backends
 }

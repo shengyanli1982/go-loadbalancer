@@ -259,7 +259,7 @@ func BenchmarkP2C_Ext(b *testing.B) {
 func generateBackends(n int) []Backend {
 	backends := make([]Backend, n)
 	for i := 0; i < n; i++ {
-		backends[i] = &testBackend{addr: fmt.Sprintf("backend-%d:8080", i)}
+		backends[i] = NewBackend(fmt.Sprintf("backend-%d:8080", i))
 	}
 	return backends
 }
@@ -268,10 +268,7 @@ func generateWeightedBackends(n int) []Backend {
 	backends := make([]Backend, n)
 	for i := 0; i < n; i++ {
 		weight := (i % 10) + 1
-		backends[i] = &simpleWeightedBackend{
-			addr:   fmt.Sprintf("backend-%d:8080", i),
-			weight: weight,
-		}
+		backends[i] = NewWeightedBackend(fmt.Sprintf("backend-%d:8080", i), weight)
 	}
 	return backends
 }

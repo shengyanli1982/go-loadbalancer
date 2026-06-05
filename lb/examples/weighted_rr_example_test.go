@@ -9,9 +9,9 @@ import (
 func ExampleNewWeightedRR() {
 	selector := lb.NewWeightedRR()
 	backends := []lb.Backend{
-		&simpleWeightedBackend{addr: "192.168.1.1:8080", weight: 3},
-		&simpleWeightedBackend{addr: "192.168.1.2:8080", weight: 1},
-		&simpleWeightedBackend{addr: "192.168.1.3:8080", weight: 1},
+		lb.NewWeightedBackend("192.168.1.1:8080", 3),
+		lb.NewWeightedBackend("192.168.1.2:8080", 1),
+		lb.NewWeightedBackend("192.168.1.3:8080", 1),
 	}
 
 	for i := 0; i < 10; i++ {
