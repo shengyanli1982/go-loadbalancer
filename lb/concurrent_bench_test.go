@@ -1,6 +1,7 @@
 package lb
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -54,4 +55,63 @@ func BenchmarkConcurrent_RingHash(b *testing.B) {
 
 func BenchmarkConcurrent_Maglev(b *testing.B) {
 	benchmarkConcurrentSelectByHash(b, NewMaglev(&MaglevOptions{TableSize: 65537}), generateBackends(50), []byte("test-key-concurrent"))
+}
+
+func BenchmarkConcurrent_EDF(b *testing.B) {
+	selector := NewEDF()
+	backends := generateWeightedBackends(100)
+	b.ReportAllocs()
+	b.ResetTimer()
+	benchmarkConcurrentSelect(b, selector, backends)
+}
+
+func BenchmarkConcurrent_Rendezvous(b *testing.B) {
+	selector := NewRendezvous()
+	backends := generateBackends(100)
+	b.ReportAllocs()
+	b.ResetTimer()
+	benchmarkConcurrentSelect(b, selector, backends)
+}
+
+func BenchmarkConcurrent_LeastTime(b *testing.B) {
+	configs := make([]ltConfig, 100)
+	for i := 0; i < 100; i++ {
+		configs[i] = ltConfig{
+			addr:    fmt.Sprintf("svc-%d:80", i),
+			weight:  (i % 3) + 1,
+			latency: float64(i*5 + 1),
+			conns:   i % 10,
+		}
+	}
+	backends := newLatencyBackends(configs)
+	selector := NewLeastTime()
+	b.ReportAllocs()
+	b.ResetTimer()
+	benchmarkConcurrentSelect(b, selector, backends)
+}
+
+func BenchmarkConcurrent_ARB(b *testing.B) {
+	selector := NewActiveRequestBiasWithOptions(&ARBOptions{Bias: 1.0})
+	backends := generateWeightedBackends(100)
+	b.ReportAllocs()
+	b.ResetTimer()
+	benchmarkConcurrentSelect(b, selector, backends)
+}
+
+func BenchmarkConcurrent_IPHash(b *testing.B) {
+	selector := NewIPHash()
+	backends := generateBackends(50)
+	key := []byte("192.168.1.100")
+	b.ReportAllocs()
+	b.ResetTimer()
+	benchmarkConcurrentSelectByHash(b, selector, backends, key)
+}
+
+func BenchmarkConcurrent_URIHash(b *testing.B) {
+	selector := NewURIHash(nil)
+	backends := generateBackends(50)
+	key := []byte("/api/users/123")
+	b.ReportAllocs()
+	b.ResetTimer()
+	benchmarkConcurrentSelectByHash(b, selector, backends, key)
 }

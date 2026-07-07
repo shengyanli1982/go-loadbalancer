@@ -5,7 +5,7 @@ import "sync/atomic"
 // roundRobin 实现轮询负载均衡算法
 // 特点：简单高效，请求均匀分配
 type roundRobin struct {
-	index atomic.Int32
+	index atomic.Uint64
 }
 
 // NewRoundRobin 创建轮询选择器
@@ -19,6 +19,6 @@ func (r *roundRobin) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
 	}
-	n := r.index.Add(1)
-	return backends[int(uint32(n-1))%len(backends)]
+	r.index.Add(1)
+	return backends[r.index.Load()%uint64(len(backends))]
 }

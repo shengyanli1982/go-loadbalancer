@@ -1,6 +1,7 @@
 package lb
 
 import (
+	"encoding/binary"
 	"unsafe"
 
 	"github.com/cespare/xxhash/v2"
@@ -35,6 +36,7 @@ func computeBackendsFingerprint(backends []Backend) uint64 {
 	h := xxhash.New()
 	for _, b := range backends {
 		h.WriteString(b.Address())
+		h.Write([]byte{'|'})
 	}
 	return h.Sum64()
 }
@@ -52,10 +54,11 @@ func computeWeightedFingerprint(backends []Backend) uint64 {
 				w = v
 			}
 		}
-		// 写入分隔符 "|" 和权重（2字节大端），防止 Address 边界歧义
+		// 写入分隔符 "|" 和权重（8字节大端 uint64），防止 Address 边界歧义及大权重截断
 		h.Write([]byte{'|'})
-		wb := [2]byte{byte(w >> 8), byte(w)}
-		h.Write(wb[:])
+		var wBuf [8]byte
+		binary.BigEndian.PutUint64(wBuf[:], uint64(w))
+		h.Write(wBuf[:])
 	}
 	return h.Sum64()
 }

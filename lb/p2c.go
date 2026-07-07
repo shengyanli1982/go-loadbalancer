@@ -5,17 +5,42 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	_ "unsafe" // for go:linkname
 )
+
+//go:noescape
+//go:linkname nanotime runtime.nanotime
+func nanotime() int64
+
+// cacheSnapshot 封装后端列表的缓存检测元数据。
+// 通过比较 fingerprint / slicePtr / sliceLen 判断是否需要重建。
+type cacheSnapshot struct {
+	fingerprint uint64  // 后端列表指纹
+	slicePtr    uintptr // 后端 slice 底层数组地址
+	sliceLen    int     // 后端 slice 长度
+}
+
+// p2cData 包含 P2C 选择器的所有可变状态。
+// 通过 atomic.Pointer 实现无锁读取，仅在重建时加锁。
+type p2cData struct {
+	loads     []atomic.Int64 // 按位置索引的负载计数（Select 快速路径）
+	addrs     []string       // 按位置缓存的后端地址
+	addrIndex map[string]int // 地址到位置的映射（Release O(1) 查找）
+	cacheSnapshot
+}
 
 // p2c 实现 Power of Two Choices (P2C) 负载均衡算法
 // 特点：随机选择两个后端，选择负载较低的一个
-// 优势：结合了随机性和负载均衡，在大规模分布式系统中表现优秀
+//
+// 性能优化：
+//   - 使用 atomic.Pointer[p2cData] 实现 Select 快速路径无锁读取
+//   - 使用 loads []atomic.Int64 slice 按索引 O(1) 访问，替代 sync.Map
+//   - 使用 nextDecay + CAS 减少原子写操作频率（快速路径仅 Load，无 Swap）
 type p2c struct {
-	mu       sync.Mutex
-	rng      *rand.Rand
-	loads    sync.Map     // 使用 atomic Int64 记录每个后端的负载
-	decay    float64      // 负载衰减因子
-	lastTime atomic.Int64 // 上次衰减时间
+	data      atomic.Pointer[p2cData] // 原子指针，支持无锁读取
+	decay     float64                 // 负载衰减因子（创建后不变）
+	nextDecay atomic.Int64            // 下次衰减时间点（纳秒）
+	mu        sync.Mutex              // 仅用于 rebuild（后端列表变化时）
 }
 
 // P2CReleaser 接口，用于在请求完成后释放负载
@@ -40,19 +65,19 @@ func NewP2CWithOptions(opts *P2COptions) Selector {
 		decay = opts.Decay
 	}
 	p := &p2c{
-		rng:   rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 		decay: decay,
 	}
-	p.lastTime.Store(time.Now().UnixNano())
+	p.data.Store(&p2cData{})
+	p.nextDecay.Store(nanotime() + int64(time.Second))
 	return p
 }
 
 // Select 使用 P2C 算法选择一个后端
 // 算法：
 // 1. 随机选择两个不同的后端
-// 2. 比较两个后端的负载（连接数/权重）
+// 2. 比较两个后端的负载
 // 3. 选择负载较低的后端
-// 4. 如果超过1秒没有更新，对负载进行指数衰减
+// 4. 如果超过1秒没有衰减，对负载进行指数衰减
 func (p *p2c) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
@@ -60,66 +85,133 @@ func (p *p2c) Select(backends []Backend) Backend {
 
 	// 单后端直接返回
 	if len(backends) == 1 {
-		addr := backends[0].Address()
-		p.applyDecay()
-		load := p.getOrCreateLoad(addr)
-		load.Add(1)
+		data := p.getData(backends)
+		p.applyDecay(data)
+		data.loads[0].Add(1)
 		return backends[0]
 	}
 
-	p.applyDecay()
+	data := p.getData(backends)
+	p.applyDecay(data)
 
-	// 随机选择两个不同的后端
-	p.mu.Lock()
-	idx1 := p.rng.IntN(len(backends))
-	idx2 := p.rng.IntN(len(backends))
-	for idx2 == idx1 {
-		idx2 = p.rng.IntN(len(backends))
+	// 随机选择两个不同的后端（O(1) 无循环）
+	n := len(backends)
+	idx1 := rand.IntN(n)
+	idx2 := rand.IntN(n - 1)
+	if idx2 >= idx1 {
+		idx2++
 	}
-	p.mu.Unlock()
 
-	b1, b2 := backends[idx1], backends[idx2]
-	addr1, addr2 := b1.Address(), b2.Address()
-
-	load1 := p.getOrCreateLoad(addr1)
-	load2 := p.getOrCreateLoad(addr2)
+	// 使用 slice 按索引 O(1) 访问，无锁
+	load1 := data.loads[idx1].Load()
+	load2 := data.loads[idx2].Load()
 
 	// 选择负载较低的后端
-	if load1.Load() <= load2.Load() {
-		load1.Add(1)
-		return b1
+	if load1 <= load2 {
+		data.loads[idx1].Add(1)
+		return backends[idx1]
 	}
-	load2.Add(1)
-	return b2
+	data.loads[idx2].Add(1)
+	return backends[idx2]
 }
 
-// getOrCreateLoad 获取或创建后端的负载计数器
-func (p *p2c) getOrCreateLoad(addr string) *atomic.Int64 {
-	if v, ok := p.loads.Load(addr); ok {
-		return v.(*atomic.Int64)
+// getData 获取当前状态，如后端列表变化则触发重建
+func (p *p2c) getData(backends []Backend) *p2cData {
+	data := p.data.Load()
+	ptr := backendsSlicePtr(backends)
+	n := len(backends)
+
+	// 快速路径：同一个 slice 指针 + 长度，直接返回
+	if ptr == data.slicePtr && n == data.sliceLen {
+		return data
 	}
-	newLoad := &atomic.Int64{}
-	v, loaded := p.loads.LoadOrStore(addr, newLoad)
-	if loaded {
-		return v.(*atomic.Int64)
+
+	return p.getDataSlow(backends, data, ptr, n)
+}
+
+// getDataSlow 慢路径：检查 fingerprint，必要时重建
+func (p *p2c) getDataSlow(backends []Backend, data *p2cData, ptr uintptr, n int) *p2cData {
+	fp := computeBackendsFingerprint(backends)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Double-check: 重新加载最新状态
+	data = p.data.Load()
+
+	// fingerprint 匹配，仅更新缓存的 ptr/len（避免重复计算 fingerprint）
+	if fp == data.fingerprint {
+		if ptr != data.slicePtr || n != data.sliceLen {
+			newData := *data // 浅拷贝，共享 loads/addrs/addrIndex
+			newData.slicePtr = ptr
+			newData.sliceLen = n
+			p.data.Store(&newData)
+			return &newData
+		}
+		return data
 	}
-	return newLoad
+
+	// fingerprint 不匹配，完整重建
+	newData := p.rebuildData(backends, fp, ptr, data)
+	p.data.Store(newData)
+	return newData
+}
+
+// rebuildData 重建状态数据，迁移已有负载
+func (p *p2c) rebuildData(backends []Backend, fp uint64, ptr uintptr, oldData *p2cData) *p2cData {
+	n := len(backends)
+	newData := &p2cData{
+		loads:     make([]atomic.Int64, n),
+		addrs:     make([]string, n),
+		addrIndex: make(map[string]int, n),
+		cacheSnapshot: cacheSnapshot{
+			fingerprint: fp,
+			slicePtr:    ptr,
+			sliceLen:    n,
+		},
+	}
+
+	for i, b := range backends {
+		addr := b.Address()
+		newData.addrs[i] = addr
+		newData.addrIndex[addr] = i
+
+		// 迁移已有负载（如果后端存在于旧状态）
+		if oldIdx, ok := oldData.addrIndex[addr]; ok {
+			newData.loads[i].Store(oldData.loads[oldIdx].Load())
+		}
+	}
+
+	return newData
 }
 
 // applyDecay 对所有后端的负载进行指数衰减
-// 每秒衰减一次，衰减因子由 decay 决定
-func (p *p2c) applyDecay() {
-	now := time.Now().UnixNano()
-	last := p.lastTime.Swap(now)
-	elapsed := now - last
-	if elapsed > int64(time.Second) {
-		p.loads.Range(func(key, value any) bool {
-			load := value.(*atomic.Int64)
-			current := load.Load()
+// 优化：快速路径仅 atomic.Load 检查时间，无原子写入
+// 通过 CAS 确保同一秒内只有一个 goroutine 执行衰减
+func (p *p2c) applyDecay(data *p2cData) {
+	now := nanotime()
+	next := p.nextDecay.Load()
+
+	// 快速路径：尚未到衰减时间，仅一次 atomic.Load
+	if now < next {
+		return
+	}
+
+	// CAS 确保只有一个 goroutine 执行衰减
+	newNext := now + int64(time.Second)
+	if !p.nextDecay.CompareAndSwap(next, newNext) {
+		return // 其他 goroutine 已处理
+	}
+
+	// 对所有负载进行指数衰减
+	for i := range data.loads {
+		for {
+			current := data.loads[i].Load()
 			decayed := int64(float64(current) * p.decay)
-			load.Store(decayed)
-			return true
-		})
+			if data.loads[i].CompareAndSwap(current, decayed) {
+				break
+			}
+		}
 	}
 }
 
@@ -129,17 +221,22 @@ func (p *p2c) Release(backend Backend) {
 	if backend == nil {
 		return
 	}
+	data := p.data.Load()
 	addr := backend.Address()
-	if v, ok := p.loads.Load(addr); ok {
-		load := v.(*atomic.Int64)
-		for {
-			current := load.Load()
-			if current <= 0 {
-				return
-			}
-			if load.CompareAndSwap(current, current-1) {
-				return
-			}
+
+	idx, ok := data.addrIndex[addr]
+	if !ok {
+		return
+	}
+
+	load := &data.loads[idx]
+	for {
+		current := load.Load()
+		if current <= 0 {
+			return
+		}
+		if load.CompareAndSwap(current, current-1) {
+			return
 		}
 	}
 }

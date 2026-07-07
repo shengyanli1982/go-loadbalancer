@@ -58,28 +58,16 @@ func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 	}
 	s.currentWeight[selected] -= s.totalWeight
 
-	return s.backends[selected]
+	return backends[selected]
 }
 
 // rebuild 重新初始化后端权重数据
 // 复用已有切片容量，避免不必要的堆分配
 func (s *smoothWeightedRR) rebuild(backends []Backend, fp uint64) {
 	n := len(backends)
-	if cap(s.backends) >= n {
-		s.backends = s.backends[:n]
-	} else {
-		s.backends = make([]Backend, n)
-	}
-	if cap(s.currentWeight) >= n {
-		s.currentWeight = s.currentWeight[:n]
-	} else {
-		s.currentWeight = make([]int, n)
-	}
-	if cap(s.effectiveWeight) >= n {
-		s.effectiveWeight = s.effectiveWeight[:n]
-	} else {
-		s.effectiveWeight = make([]int, n)
-	}
+	s.backends = resizeSlice(s.backends, n)
+	s.currentWeight = resizeSlice(s.currentWeight, n)
+	s.effectiveWeight = resizeSlice(s.effectiveWeight, n)
 	s.totalWeight = 0
 	for i, b := range backends {
 		w := getWeight(b)

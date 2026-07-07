@@ -2,6 +2,9 @@ package lb
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLeastConn_Select(t *testing.T) {
@@ -9,25 +12,19 @@ func TestLeastConn_Select(t *testing.T) {
 	backends := newTestBackends("a", "b", "c")
 
 	result := selector.Select(backends)
-	if result == nil {
-		t.Fatal("expected non-nil backend")
-	}
+	require.NotNil(t, result)
 }
 
 func TestLeastConn_NilBackends(t *testing.T) {
 	selector := NewLeastConn()
 	result := selector.Select(nil)
-	if result != nil {
-		t.Errorf("expected nil for nil backends")
-	}
+	assert.Nil(t, result)
 }
 
 func TestLeastConn_EmptyBackends(t *testing.T) {
 	selector := NewLeastConn()
 	result := selector.Select([]Backend{})
-	if result != nil {
-		t.Errorf("expected nil for empty backends")
-	}
+	assert.Nil(t, result)
 }
 
 func TestLeastConn_SingleBackend(t *testing.T) {
@@ -36,9 +33,8 @@ func TestLeastConn_SingleBackend(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		result := selector.Select(backends)
-		if result == nil || result.Address() != "a" {
-			t.Errorf("expected 'a', got '%s'", result.Address())
-		}
+		require.NotNil(t, result)
+		assert.Equal(t, "a", result.Address())
 	}
 }
 
@@ -47,17 +43,13 @@ func TestP2C_Select(t *testing.T) {
 	backends := newTestBackends("a", "b", "c")
 
 	result := selector.Select(backends)
-	if result == nil {
-		t.Fatal("expected non-nil backend")
-	}
+	require.NotNil(t, result)
 }
 
 func TestP2C_NilBackends(t *testing.T) {
 	selector := NewP2C()
 	result := selector.Select(nil)
-	if result != nil {
-		t.Errorf("expected nil for nil backends")
-	}
+	assert.Nil(t, result)
 }
 
 func TestP2C_SingleBackend(t *testing.T) {
@@ -66,8 +58,7 @@ func TestP2C_SingleBackend(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		result := selector.Select(backends)
-		if result == nil || result.Address() != "a" {
-			t.Errorf("expected 'a', got '%s'", result.Address())
-		}
+		require.NotNil(t, result)
+		assert.Equal(t, "a", result.Address())
 	}
 }

@@ -2,6 +2,9 @@ package lb
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSmoothWeightedRR_Select(t *testing.T) {
@@ -13,25 +16,19 @@ func TestSmoothWeightedRR_Select(t *testing.T) {
 	}
 
 	result := selector.Select(backends)
-	if result == nil {
-		t.Fatal("expected non-nil backend")
-	}
+	require.NotNil(t, result)
 }
 
 func TestSmoothWeightedRR_NilBackends(t *testing.T) {
 	selector := NewSmoothWeightedRR()
 	result := selector.Select(nil)
-	if result != nil {
-		t.Errorf("expected nil for nil backends")
-	}
+	assert.Nil(t, result)
 }
 
 func TestSmoothWeightedRR_EmptyBackends(t *testing.T) {
 	selector := NewSmoothWeightedRR()
 	result := selector.Select([]Backend{})
-	if result != nil {
-		t.Errorf("expected nil for empty backends")
-	}
+	assert.Nil(t, result)
 }
 
 func TestSmoothWeightedRR_Distribution(t *testing.T) {
@@ -48,10 +45,6 @@ func TestSmoothWeightedRR_Distribution(t *testing.T) {
 		counts[b.Address()]++
 	}
 
-	if counts["a"] < 1500 || counts["a"] > 3500 {
-		t.Errorf("expected ~2500 for 'a' (25%%), got %d", counts["a"])
-	}
-	if counts["b"] < 6500 || counts["b"] > 8500 {
-		t.Errorf("expected ~7500 for 'b' (75%%), got %d", counts["b"])
-	}
+	assert.InDelta(t, 2500, counts["a"], 1000, "'a' (25%%) count")
+	assert.InDelta(t, 7500, counts["b"], 1000, "'b' (75%%) count")
 }
