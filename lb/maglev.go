@@ -1,9 +1,6 @@
 package lb
 
-import (
-	"encoding/binary"
-	"sync"
-)
+import "sync"
 
 const (
 	DefaultMaglevTableSize = 65537 // Maglev 表默认大小（质数）
@@ -13,14 +10,12 @@ const (
 // 特点：Google 论文实现，O(1) 查找速度，空间效率高
 // 原理：使用查找表（lookup table）实现快速路由
 type maglev struct {
-	mu                  sync.RWMutex
-	table               []int     // 查找表，大小为 tableSize
-	backends            []Backend // 缓存后端列表
-	tableSize           int       // 表大小
-	n                   int       // 后端数量
-	backendsFingerprint uint64    // 后端列表指纹，替代逐地址比较
-	backendsSlicePtr    uintptr   // 后端 slice 底层数组地址，用于快速缓存检测
-	backendsSliceLen    int       // 后端 slice 长度，配合指针做快速缓存检测
+	mu        sync.RWMutex
+	table     []int     // 查找表，大小为 tableSize
+	backends  []Backend // 缓存后端列表
+	tableSize int       // 表大小
+	n         int       // 后端数量
+	cacheSnapshot
 }
 
 // MaglevOptions 配置选项
@@ -37,8 +32,11 @@ type MaglevSelector interface {
 // NewMaglev 创建 Maglev 选择器
 func NewMaglev(opts *MaglevOptions) MaglevSelector {
 	size := DefaultMaglevTableSize
-	if opts != nil && opts.TableSize > 0 {
+	if opts != nil && opts.TableSize >= 2 {
 		size = opts.TableSize
+		if !isPrime(size) {
+			size = nextPrime(size)
+		}
 	}
 	return &maglev{
 		tableSize: size,
@@ -47,17 +45,13 @@ func NewMaglev(opts *MaglevOptions) MaglevSelector {
 
 // Select 随机选择一个后端（使用 Maglev 算法）
 // 使用随机 key 调用 SelectByHash
+// 优化：使用 math/rand/v2 全局无锁 PRNG（ChaCha8），替代 globalRNG 的 sync.Mutex
 func (m *maglev) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
 	}
-	rng := globalRNG()
-	rng.mu.Lock()
-	randomKey := rng.rng.Uint64()
-	rng.mu.Unlock()
-	var keyBuf [8]byte
-	binary.BigEndian.PutUint64(keyBuf[:], randomKey)
-	return m.SelectByHash(backends, keyBuf[:])
+	key := randomKey8()
+	return m.SelectByHash(backends, key[:])
 }
 
 // SelectByHash 使用 Maglev 算法选择一个后端
@@ -77,7 +71,7 @@ func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 	// 快速路径：slice 指针匹配且表已构建 → 直接查找
 	ptr := backendsSlicePtr(backends)
 	m.mu.RLock()
-	if m.table != nil && ptr == m.backendsSlicePtr && len(backends) == m.backendsSliceLen {
+	if m.table != nil && ptr == m.slicePtr && len(backends) == m.sliceLen {
 		h := hash64(key)
 		idx := h % uint64(m.tableSize)
 		result := m.table[idx]
@@ -92,11 +86,11 @@ func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 	// 慢速路径：需要检查 fingerprint 并可能重建查找表
 	fp := computeBackendsFingerprint(backends)
 	m.mu.Lock()
-	if m.table == nil || fp != m.backendsFingerprint || !(ptr == m.backendsSlicePtr && len(backends) == m.backendsSliceLen) {
+	if m.table == nil || fp != m.fingerprint || !(ptr == m.slicePtr && len(backends) == m.sliceLen) {
 		m.buildTable(backends)
-		m.backendsFingerprint = fp
-		m.backendsSlicePtr = ptr
-		m.backendsSliceLen = len(backends)
+		m.fingerprint = fp
+		m.slicePtr = ptr
+		m.sliceLen = len(backends)
 	}
 	h := hash64(key)
 	idx := h % uint64(m.tableSize)
@@ -150,4 +144,35 @@ func (m *maglev) buildTable(backends []Backend) {
 			}
 		}
 	}
+}
+
+func isPrime(n int) bool {
+	if n < 2 {
+		return false
+	}
+	if n < 4 {
+		return true
+	}
+	if n%2 == 0 || n%3 == 0 {
+		return false
+	}
+	for i := 5; i*i <= n; i += 6 {
+		if n%i == 0 || n%(i+2) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func nextPrime(n int) int {
+	if n <= 2 {
+		return 2
+	}
+	if n%2 == 0 {
+		n++
+	}
+	for !isPrime(n) {
+		n += 2
+	}
+	return n
 }

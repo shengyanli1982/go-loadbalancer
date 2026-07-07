@@ -16,10 +16,11 @@ func BenchmarkRoundRobin(b *testing.B) {
 }
 
 func BenchmarkRoundRobin_Ext(b *testing.B) {
-	for _, n := range []int{10, 100, 1000} {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
 			backends := generateBackends(n)
 			selector := NewRoundRobin()
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				selector.Select(backends)
@@ -39,10 +40,11 @@ func BenchmarkRandom(b *testing.B) {
 }
 
 func BenchmarkRandom_Ext(b *testing.B) {
-	for _, n := range []int{10, 100, 1000} {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
 			backends := generateBackends(n)
 			selector := NewRandom()
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				selector.Select(backends)
@@ -145,11 +147,12 @@ func BenchmarkRingHash_SelectByHash(b *testing.B) {
 }
 
 func BenchmarkRingHash_SelectByHash_Ext(b *testing.B) {
-	for _, n := range []int{10, 50, 100, 500} {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
 			backends := generateBackends(n)
 			selector := NewRingHash(&RingHashOptions{RingSize: 65536})
 			key := []byte("test-key")
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				selector.SelectByHash(backends, key)
@@ -169,11 +172,12 @@ func BenchmarkMaglev_SelectByHash(b *testing.B) {
 }
 
 func BenchmarkMaglev_SelectByHash_Ext(b *testing.B) {
-	for _, n := range []int{10, 50, 100, 500} {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
 			backends := generateBackends(n)
 			selector := NewMaglev(&MaglevOptions{TableSize: 65537})
 			key := []byte("test-key")
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				selector.SelectByHash(backends, key)
@@ -205,10 +209,11 @@ func BenchmarkP2C_Release(b *testing.B) {
 }
 
 func BenchmarkWeightedRR_Ext(b *testing.B) {
-	for _, n := range []int{10, 100, 1000} {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
 			backends := generateWeightedBackends(n)
 			selector := NewWeightedRR()
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				selector.Select(backends)
@@ -218,10 +223,11 @@ func BenchmarkWeightedRR_Ext(b *testing.B) {
 }
 
 func BenchmarkSmoothWeightedRR_Ext(b *testing.B) {
-	for _, n := range []int{10, 100, 1000} {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
 			backends := generateWeightedBackends(n)
 			selector := NewSmoothWeightedRR()
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				selector.Select(backends)
@@ -231,10 +237,11 @@ func BenchmarkSmoothWeightedRR_Ext(b *testing.B) {
 }
 
 func BenchmarkLeastConn_Ext(b *testing.B) {
-	for _, n := range []int{10, 100, 500} {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
 			backends := generateBackends(n)
 			selector := NewLeastConn()
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				selector.Select(backends)
@@ -244,10 +251,78 @@ func BenchmarkLeastConn_Ext(b *testing.B) {
 }
 
 func BenchmarkP2C_Ext(b *testing.B) {
-	for _, n := range []int{10, 100, 500} {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
 		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
 			backends := generateBackends(n)
 			selector := NewP2C()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				selector.Select(backends)
+			}
+		})
+	}
+}
+
+func BenchmarkIPHash_Ext(b *testing.B) {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
+		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
+			backends := generateBackends(n)
+			selector := NewIPHash()
+			key := []byte("192.168.1.100")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				selector.SelectByHash(backends, key)
+			}
+		})
+	}
+}
+
+func BenchmarkURIHash_Ext(b *testing.B) {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
+		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
+			backends := generateBackends(n)
+			selector := NewURIHash(nil)
+			key := []byte("/api/users/123")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				selector.SelectByHash(backends, key)
+			}
+		})
+	}
+}
+
+func BenchmarkLeastTime_Ext(b *testing.B) {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
+		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
+			configs := make([]ltConfig, n)
+			for i := 0; i < n; i++ {
+				configs[i] = ltConfig{
+					addr:    fmt.Sprintf("svc-%d:80", i),
+					weight:  (i % 3) + 1,
+					latency: float64(i*5 + 1),
+					conns:   i % 10,
+				}
+			}
+			backends := newLatencyBackends(configs)
+			selector := NewLeastTime()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				selector.Select(backends)
+			}
+		})
+	}
+}
+
+func BenchmarkARB_Ext(b *testing.B) {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
+		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
+			backends := generateWeightedBackends(n)
+			selector := NewActiveRequestBiasWithOptions(&ARBOptions{Bias: 1.0})
+			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				selector.Select(backends)

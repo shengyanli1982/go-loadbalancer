@@ -1,6 +1,7 @@
 package lb
 
 import (
+	"encoding/binary"
 	"math/rand/v2"
 	"sync"
 )
@@ -8,22 +9,26 @@ import (
 // random 实现随机负载均衡算法
 // 特点：完全随机，无状态，无额外开销
 type random struct {
-	mu  sync.Mutex
-	rng *rand.Rand
+	mu      sync.Mutex
+	rng     *rand.Rand
+	hasSeed bool
 }
 
 // NewRandom 创建随机选择器（使用当前时间作为随机种子）
 func NewRandom() Selector {
-	return &random{
-		rng: rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
-	}
+	return &random{}
 }
 
 // NewRandomWithSeed 创建随机选择器（使用指定种子）
 // 可用于测试场景，确保随机结果可复现
 func NewRandomWithSeed(seed int64) Selector {
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], uint64(seed))
+	seed1 := binary.LittleEndian.Uint64(buf[:])
+	seed2 := seed1 ^ 0x9E3779B97F4A7C15
 	return &random{
-		rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))),
+		rng:     rand.New(rand.NewPCG(seed1, seed2)),
+		hasSeed: true,
 	}
 }
 
@@ -32,8 +37,11 @@ func (r *random) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
 	}
-	r.mu.Lock()
-	idx := r.rng.IntN(len(backends))
-	r.mu.Unlock()
-	return backends[idx]
+	if r.hasSeed {
+		r.mu.Lock()
+		idx := r.rng.IntN(len(backends))
+		r.mu.Unlock()
+		return backends[idx]
+	}
+	return backends[rand.IntN(len(backends))]
 }

@@ -3,6 +3,9 @@ package lb
 import (
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConcurrent_RoundRobin(t *testing.T) {
@@ -18,9 +21,7 @@ func TestConcurrent_RoundRobin(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				b := selector.Select(backends)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 			}
 		}()
 	}
@@ -44,9 +45,7 @@ func TestConcurrent_WeightedRR(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				b := selector.Select(backends)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 			}
 		}()
 	}
@@ -70,9 +69,7 @@ func TestConcurrent_SmoothWeightedRR(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				b := selector.Select(backends)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 			}
 		}()
 	}
@@ -92,9 +89,7 @@ func TestConcurrent_Random(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				b := selector.Select(backends)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 			}
 		}()
 	}
@@ -114,9 +109,7 @@ func TestConcurrent_LestConn(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				b := selector.Select(backends)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 			}
 		}()
 	}
@@ -126,9 +119,8 @@ func TestConcurrent_LestConn(t *testing.T) {
 func TestConcurrent_LestConn_Release(t *testing.T) {
 	selector := NewLeastConn()
 	releaser, ok := selector.(LeastConnReleaser)
-	if !ok {
-		t.Fatal("selector does not implement LeastConnReleaser")
-	}
+	require.True(t, ok)
+
 	backends := newTestBackends("a", "b", "c")
 	const goroutines = 20
 	const callsPerGoroutine = 50
@@ -140,9 +132,7 @@ func TestConcurrent_LestConn_Release(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				b := selector.Select(backends)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 				releaser.Release(b)
 			}
 		}()
@@ -169,9 +159,7 @@ func TestConcurrent_P2C(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				b := selector.Select(backends)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 			}
 		}()
 	}
@@ -181,9 +169,8 @@ func TestConcurrent_P2C(t *testing.T) {
 func TestConcurrent_P2C_Release(t *testing.T) {
 	selector := NewP2C()
 	releaser, ok := selector.(P2CReleaser)
-	if !ok {
-		t.Fatal("selector does not implement P2CReleaser")
-	}
+	require.True(t, ok)
+
 	backends := newTestBackends("a", "b", "c")
 	const goroutines = 20
 	const callsPerGoroutine = 50
@@ -195,9 +182,7 @@ func TestConcurrent_P2C_Release(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < callsPerGoroutine; j++ {
 				b := selector.Select(backends)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 				releaser.Release(b)
 			}
 		}()
@@ -230,9 +215,7 @@ func TestConcurrent_RingHash_SelectByHash(t *testing.T) {
 			for j := 0; j < callsPerGoroutine; j++ {
 				key := keys[j%len(keys)]
 				b := selector.SelectByHash(backends, key)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 			}
 		}()
 	}
@@ -258,9 +241,7 @@ func TestConcurrent_Maglev_SelectByHash(t *testing.T) {
 			for j := 0; j < callsPerGoroutine; j++ {
 				key := keys[j%len(keys)]
 				b := selector.SelectByHash(backends, key)
-				if b == nil {
-					t.Error("expected non-nil backend")
-				}
+				assert.NotNil(t, b)
 			}
 		}()
 	}

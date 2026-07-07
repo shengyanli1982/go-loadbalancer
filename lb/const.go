@@ -17,4 +17,9 @@ const (
 
 	// DefaultVirtualNodes 每个后端的默认虚拟节点数
 	DefaultVirtualNodes = 100
+
+	// TreeThresholdLeastConn/TreeThresholdARB 树结构阈值
+	// N >= 阈值时使用树结构 O(log n)，否则线性扫描 O(n)
+	TreeThresholdLeastConn = 32
+	TreeThresholdARB       = 32
 )

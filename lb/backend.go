@@ -34,6 +34,19 @@ type ConnBackend interface {
 	ActiveConnections() int
 }
 
+// LatencyBackend 定义支持延迟感知的后端接口
+// 外部实现此接口注入延迟数据，供 LeastTime 算法使用
+//
+// 使用方式：外部测量响应延迟后注入此接口，LeastTime 据此做延迟感知选择。
+// 未实现此接口的后端被视为"未探索"（score=0），优先被选中以采集延迟数据。
+type LatencyBackend interface {
+	Backend
+	// ActiveConnections 返回当前活跃连接数
+	ActiveConnections() int
+	// AverageLatency 返回平均响应延迟（毫秒或微秒均可，算法只关注相对大小）
+	AverageLatency() float64
+}
+
 // HealthBackend 定义支持健康检查的后端接口
 // 预留接口，供未来扩展使用（对标 nginx max_fails/fail_timeout 机制）
 type HealthBackend interface {
