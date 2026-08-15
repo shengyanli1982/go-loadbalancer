@@ -69,7 +69,7 @@ func TestRingHash_BuildRingMatchesReference(t *testing.T) {
 
 // TestRingHash_RebuildAllocBudget 固化慢路径重建的分配预算：
 // 交替后端触发整环重建时，ring/nodeMap 容量跨重建复用（clear 保留桶存储），
-// 每次重建仅 scratch buffer 一次分配；杜绝每 vnode 的字符串分配回归。
+// 每次重建仅 O(1) 次分配，与 vnode 数无关；杜绝每 vnode 的字符串分配回归。
 func TestRingHash_RebuildAllocBudget(t *testing.T) {
 	backendsA, backendsB := rebuildBackendPairs(rebuildBenchBackends)
 	selector := NewRingHash(nil)
@@ -79,8 +79,12 @@ func TestRingHash_RebuildAllocBudget(t *testing.T) {
 		selector.Select(backendsB)
 		selector.Select(backendsA)
 	})
-	// 预算：闭包含两次重建，每次重建约 1 次分配（scratch buffer），
-	// 断言 ≤4 即可拦截任何按 vnode 规模回归的分配
-	assert.LessOrEqual(t, allocs, float64(4),
-		"重建路径分配数回归：%.1f allocs/闭包（两次重建，预期 ≤4）", allocs)
+	// 预算说明：精确的 O(1) 常数取决于 Go 运行时 map 实现——
+	// swiss map（Go 1.24+）clear 后重填保留桶存储，两次重建约 2 次分配；
+	// 老式 hashmap（Go 1.23）clear 后重填 5000 条存在运行时内部桶分配，
+	// 两次重建约 18 次分配。预算 ≤32 对 1.23-1.25 均稳健，
+	// 仍比 vnode 级回归（fmt 时代 ~10049 allocs/闭包）低 2-3 个数量级：
+	// 本断言只拦截 O(n×vnodes) 级分配回归，不锁定运行时相关的精确常数。
+	assert.LessOrEqual(t, allocs, float64(32),
+		"重建路径分配数回归：%.1f allocs/闭包（两次重建，预期 ≤32）", allocs)
 }
