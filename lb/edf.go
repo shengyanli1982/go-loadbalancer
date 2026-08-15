@@ -23,6 +23,7 @@ func (a edfItem) less(b edfItem) bool {
 // 使用 O(log n) 最小堆替代 O(n) 线性扫描，大幅提升大规模后端列表的性能
 type edf struct {
 	mu            sync.Mutex
+	backends      []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
 	pq            []edfItem // 优先队列（最小堆），按 deadline 排序（手写 sift，零分配）
 	cachedWeights []int     // 权重缓存，rebuild 时填充
 	cacheSnapshot
@@ -52,11 +53,12 @@ func (e *edf) Select(backends []Backend) Backend {
 	ptr := backendsSlicePtr(backends)
 	if !(ptr == e.slicePtr && len(backends) == e.sliceLen) {
 		fp := computeWeightedFingerprint(backends)
-		if fp != e.fingerprint {
+		if fp != e.fingerprint || len(e.pq) == 0 {
 			e.rebuild(backends, fp)
 		}
 		e.slicePtr = ptr
 		e.sliceLen = len(backends)
+		e.backends = backends
 	}
 
 	// 堆顶即为最小 deadline 元素

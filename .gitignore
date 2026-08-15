@@ -1,0 +1,6 @@
+# 基准剖析产物（保留 .bench/baseline.txt 可提交）
+.bench/*.prof
+.bench/baseline_prof.txt
+
+# Serena 记忆与本地缓存
+.serena/

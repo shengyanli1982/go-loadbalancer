@@ -9,14 +9,14 @@ import "sync"
 // Select 方法使用 tiedIndices 做平局缓冲，rrIndex 做平局公平轮询。
 // 嵌入方可直接通过 Go 字段 promotion 访问所有字段（如 l.connByIndex[0]）。
 type connectionTracker struct {
-	mu               sync.Mutex
-	connByAddr       map[string]int // 按地址索引的连接计数（Release 使用，跨 rebuild 持久化）
-	connByIndex      []int          // 按位置索引的连接计数（Select 快速路径，O(1)）
-	weightCache      []int          // 按位置缓存的后端权重（避免重复 getWeight 类型断言）
-	addrCache        []string       // 缓存后端地址（避免重复 Address() 调用）
-	addrIndex        map[string]int // 地址到位置的映射（Release O(1) 查找）
-	tiedIndices      []int          // 平局索引缓冲区（Select 复用，无热路径分配）
-	rrIndex          uint64         // 全局轮询计数器，用于平局公平选择
+	mu                sync.Mutex
+	connByAddr        map[string]int // 按地址索引的连接计数（Release 使用，跨 rebuild 持久化）
+	connByIndex       []int          // 按位置索引的连接计数（Select 快速路径，O(1)）
+	weightCache       []int          // 按位置缓存的后端权重（避免重复 getWeight 类型断言）
+	addrCache         []string       // 缓存后端地址（避免重复 Address() 调用）
+	addrIndex         map[string]int // 地址到位置的映射（Release O(1) 查找）
+	tiedIndices       []int          // 平局索引缓冲区（Select 复用，无热路径分配）
+	rrIndex           uint64         // 全局轮询计数器，用于平局公平选择
 	hasUniformWeights bool           // 所有权重是否相等（Select 快速路径依据）
 }
 

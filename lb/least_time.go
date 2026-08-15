@@ -17,14 +17,17 @@ package lb
 //
 // 线程安全：使用 sync.Mutex 保护所有可变状态
 //
-// LeastConnReleaser 接口复用：Release 行为与 leastConn 完全相同（连接数递减）
+// LeastConnReleaser 接口复用：Release 仅为接口兼容保留（no-op 语义），
+// 评分只读取后端实现注入的外部指标（ActiveConnections/AverageLatency），
+// 选择器内部不维护连接计数
 type leastTime struct {
 	connectionTracker
-	latencyBackends    []LatencyBackend // 缓存的 LatencyBackend 接口（rebuildIndex 预断言，Select 零类型检查）
-	allLatencyBackends bool             // 所有后端都实现了 LatencyBackend（Select 快速路径依据）
-	backendsFingerprint uint64          // 后端列表指纹，变化时清理过期条目
-	backendsSlicePtr    uintptr         // 后端 slice 底层数组地址，快速缓存检测
-	backendsSliceLen    int             // 后端 slice 长度，配合指针做快速缓存检测
+	backends            []Backend        // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	latencyBackends     []LatencyBackend // 缓存的 LatencyBackend 接口（rebuildIndex 预断言，Select 零类型检查）
+	allLatencyBackends  bool             // 所有后端都实现了 LatencyBackend（Select 快速路径依据）
+	backendsFingerprint uint64           // 后端列表指纹，变化时清理过期条目
+	backendsSlicePtr    uintptr          // 后端 slice 底层数组地址，快速缓存检测
+	backendsSliceLen    int              // 后端 slice 长度，配合指针做快速缓存检测
 }
 
 // NewLeastTime 创建延迟感知选择器（对标 Traefik v3.6 Least Time）
@@ -43,7 +46,6 @@ func NewLeastTime() Selector {
 //	score = 0 （非LatencyBackend：视为"未探索"，优先选中以采集数据）
 //	等权重时退化为比较 avgLatency * (1 + activeConns)（省去一次除法）
 //	遇到平局时记录到 tiedIndices，扫描结束后用 rrIndex % tieLen 选取
-//	最后递增选中后端的内部连接计数
 func (l *leastTime) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
@@ -55,13 +57,14 @@ func (l *leastTime) Select(backends []Backend) Backend {
 	// 快速路径：同一个 slice → 跳过 fingerprint 计算和索引重建
 	ptr := backendsSlicePtr(backends)
 	if !(ptr == l.backendsSlicePtr && len(backends) == l.backendsSliceLen) {
-		fp := computeBackendsFingerprint(backends)
-		if fp != l.backendsFingerprint {
+		fp := computeWeightedFingerprint(backends)
+		if fp != l.backendsFingerprint || len(l.latencyBackends) == 0 {
 			l.rebuildIndex(backends)
 			l.backendsFingerprint = fp
 		}
 		l.backendsSlicePtr = ptr
 		l.backendsSliceLen = len(backends)
+		l.backends = backends
 	}
 
 	n := len(backends)
@@ -161,7 +164,6 @@ func (l *leastTime) Select(backends []Backend) Backend {
 	}
 
 	l.rrIndex++
-	l.connByIndex[bestIdx]++
 	return backends[bestIdx]
 }
 
@@ -194,8 +196,8 @@ func (l *leastTime) rebuildIndex(backends []Backend) {
 	}
 }
 
-// Release 释放一个后端的连接计数（实现 LeastConnReleaser 接口）
-// 与 leastConn.Release 逻辑完全相同
+// Release 实现 LeastConnReleaser 接口（no-op 语义）
+// LeastTime 不维护内部连接计数（评分只读外部注入指标），调用 Release 不影响后续选择
 func (l *leastTime) Release(backend Backend) {
 	l.connectionTracker.release(backend)
 }

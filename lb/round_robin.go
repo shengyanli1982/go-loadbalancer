@@ -19,6 +19,6 @@ func (r *roundRobin) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
 	}
-	r.index.Add(1)
-	return backends[r.index.Load()%uint64(len(backends))]
+	idx := r.index.Add(1) - 1
+	return backends[idx%uint64(len(backends))]
 }

@@ -1,6 +1,7 @@
 package lb
 
 import (
+	"math"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ type cacheSnapshot struct {
 // p2cData 包含 P2C 选择器的所有可变状态。
 // 通过 atomic.Pointer 实现无锁读取，仅在重建时加锁。
 type p2cData struct {
+	backends  []Backend      // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（随快照原子持有）
 	loads     []atomic.Int64 // 按位置索引的负载计数（Select 快速路径）
 	addrs     []string       // 按位置缓存的后端地址
 	addrIndex map[string]int // 地址到位置的映射（Release O(1) 查找）
@@ -92,12 +94,20 @@ func (p *p2c) Select(backends []Backend) Backend {
 	}
 
 	data := p.getData(backends)
-	p.applyDecay(data)
 
 	// 随机选择两个不同的后端（O(1) 无循环）
+	// 单次 rand.Uint64 派生两个索引，替代两次 rand.IntN 的完整抽样开销；
+	// 低/高 32 位近似独立，取模偏差量级 n/2^32，对负载均衡可忽略
 	n := len(backends)
-	idx1 := rand.IntN(n)
-	idx2 := rand.IntN(n - 1)
+	u := rand.Uint64()
+
+	// 摊销时钟读取：复用随机数低位，约 1/16 概率才检查衰减
+	// 衰减触发平均延迟约 16 次选择（秒级衰减粒度下漂移可忽略）
+	if u&0xf == 0 {
+		p.applyDecay(data)
+	}
+	idx1 := int(u % uint64(n))
+	idx2 := int(u >> 32 % uint64(n-1))
 	if idx2 >= idx1 {
 		idx2++
 	}
@@ -139,12 +149,13 @@ func (p *p2c) getDataSlow(backends []Backend, data *p2cData, ptr uintptr, n int)
 	// Double-check: 重新加载最新状态
 	data = p.data.Load()
 
-	// fingerprint 匹配，仅更新缓存的 ptr/len（避免重复计算 fingerprint）
-	if fp == data.fingerprint {
+	// fingerprint 匹配且结构已初始化，仅更新缓存的 ptr/len（避免重复计算 fingerprint）
+	if fp == data.fingerprint && data.loads != nil {
 		if ptr != data.slicePtr || n != data.sliceLen {
 			newData := *data // 浅拷贝，共享 loads/addrs/addrIndex
 			newData.slicePtr = ptr
 			newData.sliceLen = n
+			newData.backends = backends
 			p.data.Store(&newData)
 			return &newData
 		}
@@ -161,6 +172,7 @@ func (p *p2c) getDataSlow(backends []Backend, data *p2cData, ptr uintptr, n int)
 func (p *p2c) rebuildData(backends []Backend, fp uint64, ptr uintptr, oldData *p2cData) *p2cData {
 	n := len(backends)
 	newData := &p2cData{
+		backends:  backends,
 		loads:     make([]atomic.Int64, n),
 		addrs:     make([]string, n),
 		addrIndex: make(map[string]int, n),
@@ -187,8 +199,13 @@ func (p *p2c) rebuildData(backends []Backend, fp uint64, ptr uintptr, oldData *p
 
 // applyDecay 对所有后端的负载进行指数衰减
 // 优化：快速路径仅 atomic.Load 检查时间，无原子写入
-// 通过 CAS 确保同一秒内只有一个 goroutine 执行衰减
+// 通过 CAS 确保同一周期内只有一个 goroutine 执行衰减
+// 推进式语义：空闲多个周期后一次补足缺失周期数（上限截断），
+// CAS 目标基于 nextDecay 推进而非 now，保证并发下不丢周期
 func (p *p2c) applyDecay(data *p2cData) {
+	const maxDecayPeriods = 60 // 周期数上限：防 math.Pow 指数过大与结果下溢失真
+	period := int64(time.Second)
+
 	now := nanotime()
 	next := p.nextDecay.Load()
 
@@ -197,17 +214,29 @@ func (p *p2c) applyDecay(data *p2cData) {
 		return
 	}
 
-	// CAS 确保只有一个 goroutine 执行衰减
-	newNext := now + int64(time.Second)
-	if !p.nextDecay.CompareAndSwap(next, newNext) {
-		return // 其他 goroutine 已处理
+	// CAS 确保只有一个 goroutine 对每个缺失周期段执行衰减
+	var periods int64
+	for {
+		periods = (now-next)/period + 1
+		if periods > maxDecayPeriods {
+			periods = maxDecayPeriods
+		}
+		if p.nextDecay.CompareAndSwap(next, next+periods*period) {
+			break
+		}
+		// CAS 失败：其他 goroutine 已推进，重新读取后再判定
+		next = p.nextDecay.Load()
+		if now < next {
+			return
+		}
 	}
 
-	// 对所有负载进行指数衰减
+	// 对所有负载进行指数衰减（periods 个周期合并为一次乘法）
+	factor := math.Pow(p.decay, float64(periods))
 	for i := range data.loads {
 		for {
 			current := data.loads[i].Load()
-			decayed := int64(float64(current) * p.decay)
+			decayed := int64(float64(current) * factor)
 			if data.loads[i].CompareAndSwap(current, decayed) {
 				break
 			}

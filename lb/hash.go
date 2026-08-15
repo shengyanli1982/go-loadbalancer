@@ -30,35 +30,62 @@ func backendsSlicePtr(backends []Backend) uintptr {
 }
 
 // computeBackendsFingerprint 计算后端列表的指纹
-// 仅编码每个后端的 Address，用于非加权选择器（RoundRobin、Random、LeastConn）
+// 仅编码每个后端的 Address（权重变化不会触发重建），
+// 用于选择不依赖权重的选择器（P2C、RingHash、Maglev）。
+// 注意：LeastConn/ARB/LeastTime 存在加权评分路径，使用 computeWeightedFingerprint。
 // 快速检测后端列表是否发生变化，避免每次都重新构建内部数据结构
+//
+// 编码方式：length-prefix——每个地址先写入 8 字节大端长度，再写入地址内容。
+// 该编码是单射的：不同列表必然产生不同的字节流；而分隔符方案存在碰撞，
+// 例如 "|" 分隔下 fp(["a|b","c"]) == fp(["a","b|c"])，会把含 "|" 的地址
+// 列表迁移误判为"未变化"，导致选择器跳过内部数据结构重建。
+//
+// 历史教训（切勿再为性能移除 length-prefix）：
+//   - 012e12a 用 length-prefix 修复了该碰撞
+//   - 3b3c726 回归为 "|" 分隔符，碰撞重现
+//   - 本次恢复 length-prefix，并由 TestFingerprint_Injectivity 回归测试固化
 func computeBackendsFingerprint(backends []Backend) uint64 {
 	h := xxhash.New()
+	var buf [8]byte
 	for _, b := range backends {
-		h.WriteString(b.Address())
-		h.Write([]byte{'|'})
+		addr := b.Address()
+		binary.BigEndian.PutUint64(buf[:], uint64(len(addr)))
+		h.Write(buf[:])
+		h.WriteString(addr)
 	}
 	return h.Sum64()
 }
 
 // computeWeightedFingerprint 计算加权后端列表的指纹
 // 编码每个后端的 Address 和 Weight，任一变化都会触发指纹变更
-// 用于 SmoothWeightedRR 和 WeightedRR 检测后端列表或权重变化
+// 用于 WeightedRR、SmoothWeightedRR、EDF、Rendezvous、LeastConn、ARB、LeastTime
+// 检测后端列表或权重变化
+//
+// 编码方式：与 computeBackendsFingerprint 相同的 length-prefix
+// （先写 8 字节大端地址长度，再写地址内容），随后追加 8 字节大端权重，
+// 保证地址边界无歧义且大权重不截断，整体编码单射。
+//
+// 权重语义保持不变：非 WeightedBackend 或权重 <= 0 记为 1。
+//
+// 历史教训（切勿再为性能移除 length-prefix）：
+// 012e12a 修复 → 3b3c726 回归 → 本次恢复；
+// 行为由 TestFingerprint_Injectivity 回归测试固化。
 func computeWeightedFingerprint(backends []Backend) uint64 {
 	h := xxhash.New()
+	var buf [8]byte
 	for _, b := range backends {
-		h.WriteString(b.Address())
+		addr := b.Address()
+		binary.BigEndian.PutUint64(buf[:], uint64(len(addr)))
+		h.Write(buf[:])
+		h.WriteString(addr)
 		w := 1
 		if wb, ok := b.(WeightedBackend); ok {
 			if v := wb.Weight(); v > 0 {
 				w = v
 			}
 		}
-		// 写入分隔符 "|" 和权重（8字节大端 uint64），防止 Address 边界歧义及大权重截断
-		h.Write([]byte{'|'})
-		var wBuf [8]byte
-		binary.BigEndian.PutUint64(wBuf[:], uint64(w))
-		h.Write(wBuf[:])
+		binary.BigEndian.PutUint64(buf[:], uint64(w))
+		h.Write(buf[:])
 	}
 	return h.Sum64()
 }

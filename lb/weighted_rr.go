@@ -10,9 +10,10 @@ import (
 // 使用累积权重数组实现 O(log n) 二分查找选择，指纹缓存避免每次重建
 type weightedRR struct {
 	mu                  sync.Mutex
-	cachedCumulativeWts []int64 // 累积权重数组，用于二分查找 pos 落入的区间
-	totalWeight         int64   // 所有后端的权重之和
-	currentIndex        int64   // 轮询计数器（int64，取模时转为 uint64）
+	backends            []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	cachedCumulativeWts []int64   // 累积权重数组，用于二分查找 pos 落入的区间
+	totalWeight         int64     // 所有后端的权重之和
+	currentIndex        int64     // 轮询计数器（int64，取模时转为 uint64）
 	cacheSnapshot
 }
 
@@ -36,11 +37,12 @@ func (w *weightedRR) Select(backends []Backend) Backend {
 	ptr := backendsSlicePtr(backends)
 	if !(ptr == w.slicePtr && len(backends) == w.sliceLen) {
 		fp := computeWeightedFingerprint(backends)
-		if fp != w.fingerprint {
+		if fp != w.fingerprint || len(w.cachedCumulativeWts) == 0 {
 			w.rebuild(backends, fp)
 		}
 		w.slicePtr = ptr
 		w.sliceLen = len(backends)
+		w.backends = backends
 	}
 
 	if w.totalWeight == 0 {

@@ -178,6 +178,47 @@ func TestLeastTime_Release(t *testing.T) {
 	r.Release(nil)
 }
 
+func TestLeastTime_Release_DoesNotAffectSelection(t *testing.T) {
+	// LeastTime 的选择只由后端注入的外部指标（ActiveConnections/AverageLatency）驱动，
+	// 内部连接计数为死状态（已移除）：Release 不影响后续选择
+	sel := NewLeastTime()
+	releaser, ok := sel.(LeastConnReleaser)
+	require.True(t, ok, "selector should implement LeastConnReleaser")
+
+	// score = latency * (1+conns)：svc-a=10, svc-b=60 → svc-a 恒定占优
+	a := &latencyBackend{address: "svc-a:80", weight: 1, latency: 10.0, conns: 0}
+	b := &latencyBackend{address: "svc-b:80", weight: 1, latency: 10.0, conns: 5}
+	backends := []Backend{a, b}
+
+	// 阶段1：100 轮 Select→Release，外部指标恒定 → 每轮必须选中 svc-a
+	for i := 0; i < 100; i++ {
+		got := sel.Select(backends)
+		require.NotNil(t, got)
+		require.Equal(t, "svc-a:80", got.Address(),
+			"round %d: selection must follow external metrics", i)
+		releaser.Release(got)
+	}
+
+	// 阶段2：100 轮只 Select 不 Release → 选择不因内部状态而变化
+	for i := 0; i < 100; i++ {
+		got := sel.Select(backends)
+		require.Equal(t, "svc-a:80", got.Address(),
+			"round %d without Release: internal state must not affect selection", i)
+	}
+
+	// 白盒断言：内部连接计数恒为 0（死状态计数已移除，不再随 Select 递增）
+	lt := sel.(*leastTime)
+	require.Equal(t, 0, lt.connByIndex[0], "internal connection counter must stay 0")
+	require.Equal(t, 0, lt.connByIndex[1], "internal connection counter must stay 0")
+
+	// 阶段3：注入外部计数变化 → 选择必须立即切换（选择完全由外部指标驱动）
+	a.conns = 5
+	b.conns = 0
+	got := sel.Select(backends)
+	require.Equal(t, "svc-b:80", got.Address(),
+		"selection must switch when external metrics change")
+}
+
 func TestLeastTime_BackendChange(t *testing.T) {
 	// 后端列表变化后应正确重建内部状态
 	sel := NewLeastTime()
@@ -264,7 +305,7 @@ func TestLeastTime_ZeroLatencyVsNonZero(t *testing.T) {
 	// 零延迟的 LatencyBackend 也应当 score=0，与未探索后端相同
 	sel := NewLeastTime()
 	backends := []Backend{
-		NewBackend("plain:80"),                   // score=0 (non-LatencyBackend)
+		NewBackend("plain:80"),                    // score=0 (non-LatencyBackend)
 		&latencyBackend{"zero-lat:80", 1, 0.0, 0}, // score=0 (zero latency)
 		&latencyBackend{"hi-lat:80", 1, 100.0, 0}, // score=100
 	}

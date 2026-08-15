@@ -2,6 +2,7 @@ package lb
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,42 @@ func TestConcurrent_RoundRobin(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestConcurrent_RoundRobin_Distribution 验证并发下轮询分布的精确均匀性：
+// 修复 Add→Load 复合操作非原子问题后，每次 Select 获得唯一递增序号，
+// 总调用数可被后端数整除时每个后端命中数必须精确相等。
+func TestConcurrent_RoundRobin_Distribution(t *testing.T) {
+	selector := NewRoundRobin()
+	backends := newTestBackends("a", "b", "c", "d", "e")
+	const goroutines = 20
+	const callsPerGoroutine = 500
+
+	addrIndex := make(map[string]int, len(backends))
+	for i, b := range backends {
+		addrIndex[b.Address()] = i
+	}
+
+	var counts [5]atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < callsPerGoroutine; j++ {
+				b := selector.Select(backends)
+				assert.NotNil(t, b)
+				counts[addrIndex[b.Address()]].Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	expectedPerBackend := goroutines * callsPerGoroutine / len(backends)
+	for i, b := range backends {
+		require.Equal(t, int64(expectedPerBackend), counts[i].Load(),
+			"backend %s should receive exactly %d requests", b.Address(), expectedPerBackend)
+	}
 }
 
 func TestConcurrent_WeightedRR(t *testing.T) {

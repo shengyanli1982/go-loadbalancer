@@ -18,13 +18,13 @@
 - **14 Algorithms** — Round Robin, Weighted, Hash, Consistent Hash, LeastConn, P2C, Least Time, ARB, Rendezvous
 - **Zero Allocation** — all selectors allocate nothing on the fast path
 - **Thread Safe** — all selectors are goroutine-safe
-- **Adaptive Scaling** — O(log n) RB-tree / min-heap for large backend sets (≥32 backends)
+- **Adaptive Scaling** — O(log n) indexed binary heap / min-heap for large backend sets (≥32 backends)
 - **Minimal API** — `Selector` / `HashSelector` / `WeightedBackend` / `LatencyBackend`, four interfaces to learn
 - **One Dependency** — `xxhash/v2` only
 
 ## Requirements
 
-Go 1.22+
+Go 1.23+
 
 ## Supported Algorithms
 
@@ -123,7 +123,7 @@ fmt.Println(edf.Select(backends).Address())
 
 ### Connection-aware Algorithms
 
-LeastConn, ARB, and LeastTime track an internal connection counter. Call `Release` when a request completes to decrement the counter:
+LeastConn and ARB track an internal connection counter. Call `Release` when a request completes to decrement the counter:
 
 ```go
 selector := lb.NewLeastConn()
@@ -138,23 +138,21 @@ if releaser, ok := selector.(lb.LeastConnReleaser); ok {
 
 ### Latency-aware (Least Time)
 
-`LeastTime` requires backends implementing `LatencyBackend` to inject observed latency:
+`LeastTime` requires backends implementing `LatencyBackend` to inject observed latency and connection counts:
 
 ```go
 // Backend must implement LatencyBackend:
 type LatencyBackend interface {
 	Backend
-	ActiveConnections() int
+	ActiveConnections() int  // caller-injected active connection count
 	AverageLatency() float64 // milliseconds or microseconds (relative ordering matters)
 }
 
 selector := lb.NewLeastTime()
 backend := selector.Select(latencyBackends)
-
-if releaser, ok := selector.(lb.LeastConnReleaser); ok {
-	releaser.Release(backend)
-}
 ```
+
+`LeastTime` does not keep an internal connection counter — connection counts come from each backend's `ActiveConnections()` (caller-injected). It implements `LeastConnReleaser` for interface compatibility, but `Release` does not affect its selection.
 
 ### Active Request Bias (Envoy WLR)
 
@@ -170,51 +168,71 @@ selector = lb.NewActiveRequestBiasWithOptions(&lb.ARBOptions{Bias: 0.5})
 
 ## Performance
 
-Benchmark results on Apple M1 Max, Go 1.22, 100 backends. Scaling tests (10–1000 backends) are available via `go test -bench=_Ext`.
+Benchmark results on Intel Core i5-12400F (windows/amd64), Go 1.25, GOMAXPROCS=12.
+Baseline backend counts: **100** for Round Robin / Random / Weighted RR / Smooth Weighted RR / LeastConn / P2C / EDF; **50** for the hash family (marked `*`). Scaling tests (10–1000 backends) are available via `go test -bench=_Ext ./lb/`. Full baseline: [`.bench/baseline.txt`](.bench/baseline.txt).
 
 ### Single-goroutine
 
 | Algorithm           | ns/op | B/op | allocs/op |
 | ------------------- | ----- | ---- | --------- |
-| Round Robin         | 7     | 0    | 0         |
-| Random              | 7     | 0    | 0         |
-| Weighted RR         | 14    | 0    | 0         |
-| IP Hash             | 15    | 0    | 0         |
-| URI Hash            | 16    | 0    | 0         |
-| Ring Hash \*        | 24    | 0    | 0         |
-| Maglev \*           | 25    | 0    | 0         |
-| P2C                 | 65    | 0    | 0         |
-| EDF                 | 123   | 0    | 0         |
-| Smooth Weighted RR  | 144   | 0    | 0         |
-| Least Connections   | 164   | 0    | 0         |
-| Active Request Bias | 228   | 0    | 0         |
-| Least Time          | 356   | 0    | 0         |
-| Rendezvous \*       | 977   | 0    | 0         |
+| Round Robin         | 4.7   | 0    | 0         |
+| IP Hash             | 5.7   | 0    | 0         |
+| URI Hash            | 6.7   | 0    | 0         |
+| Random              | 7.0   | 0    | 0         |
+| Maglev \*           | 15.1  | 0    | 0         |
+| Weighted RR         | 15.9  | 0    | 0         |
+| Ring Hash \*        | 22.6  | 0    | 0         |
+| P2C                 | 23.5  | 0    | 0         |
+| Least Connections   | 53.0  | 0    | 0         |
+| EDF                 | 69.4  | 0    | 0         |
+| Active Request Bias | 75.8  | 0    | 0         |
+| Smooth Weighted RR  | 144.5 | 0    | 0         |
+| Rendezvous \* †     | 282.8 | 0    | 0         |
+| Least Time ‡        | 300.2 | 0    | 0         |
 
-`*` Uses `SelectByHash`.
+`*` Uses `SelectByHash`, 50 backends.
+`†` Weighted variant (Rendezvous with mixed weights).
+`‡` Measured via `LeastTime_Ext/100_backends` (no fixed-key base benchmark); Active Request Bias via `ARB_Ext/100_backends`.
 
-### Concurrent (b.RunParallel, GOMAXPROCS=8)
+`Release` cost (per call, 100 backends, single-goroutine): LeastConn **61.1 ns**, P2C **31.3 ns** — both 0 allocs/op.
 
-| Algorithm           | ns/op | B/op | allocs/op |
-| ------------------- | ----- | ---- | --------- |
-| Random              | 1.1   | 0    | 0         |
-| IP Hash             | 2.1   | 0    | 0         |
-| URI Hash            | 2.4   | 0    | 0         |
-| P2C                 | 36    | 0    | 0         |
-| Round Robin         | 53    | 0    | 0         |
-| Maglev \*           | 123   | 0    | 0         |
-| Weighted RR         | 135   | 0    | 0         |
-| Ring Hash \*        | 159   | 0    | 0         |
-| EDF                 | 316   | 0    | 0         |
-| Least Connections   | 319   | 0    | 0         |
-| Rendezvous          | 319   | 0    | 0         |
-| Smooth Weighted RR  | 325   | 0    | 0         |
-| Active Request Bias | 358   | 0    | 0         |
-| Least Time          | 502   | 0    | 0         |
+### Concurrent (b.RunParallel, GOMAXPROCS=12)
 
-> Zero allocations per operation across all algorithms. Data reflects steady-state cost with a stable backend slice; rebuild cost on backend set change is excluded.
-> `*` Ring Hash and Maglev were benchmarked with 50 backends.
-> IP Hash and URI Hash are stateless hash lookups (no shared mutex) — consistently < 3 ns/op under contention.
+| Algorithm                        | ns/op | B/op | allocs/op |
+| -------------------------------- | ----- | ---- | --------- |
+| IP Hash                          | 1.1   | 0    | 0         |
+| Random                           | 1.2   | 0    | 0         |
+| URI Hash                         | 1.2   | 0    | 0         |
+| P2C                              | 11.6  | 0    | 0         |
+| P2C (Select+Release pair)        | 16.6  | 0    | 0         |
+| Round Robin                      | 18.3  | 0    | 0         |
+| Weighted RR                      | 45.0  | 0    | 0         |
+| Maglev \*                        | 46.8  | 0    | 0         |
+| Ring Hash \*                     | 53.2  | 0    | 0         |
+| Rendezvous                       | 59.9  | 0    | 0         |
+| Least Connections                | 74.5  | 0    | 0         |
+| EDF                              | 94.1  | 0    | 0         |
+| Active Request Bias              | 98.0  | 0    | 0         |
+| Least Connections (Select+Release pair) | 99.9 | 0    | 0         |
+| Smooth Weighted RR               | 173.6 | 0    | 0         |
+| Least Time                       | 349.0 | 0    | 0         |
+
+### Rebuild cost (backend-set change, 50 backends)
+
+Fast paths above assume a stable backend slice. When the slice content changes, internal structures are rebuilt once (slow path):
+
+| Algorithm          | ns/op (rebuild) | B/op    | allocs/op |
+| ------------------ | --------------- | ------- | --------- |
+| Weighted RR        | 1.2µs           | 0       | 0         |
+| Smooth Weighted RR | 1.2µs           | 0       | 0         |
+| Rendezvous         | 1.3µs           | 0       | 0         |
+| Least Connections  | 7.7µs           | 2.3KB   | 6         |
+| Ring Hash          | 450µs           | 116B    | 1         |
+| Maglev             | 3.1ms           | 534KB   | 4         |
+
+> Zero allocations on every hot path (Select / SelectByHash / Release); rebuild allocations happen only on the cold path when the backend set actually changes.
+> Ring Hash rebuild builds n×virtualNodes hashed vnodes and sorts them; Maglev fills a 65537-slot table — prefer them for stable sets, and expect a one-time rebuild spike per topology change.
+> IP Hash and URI Hash are stateless hash lookups (no shared mutex) — consistently ~1 ns/op under contention.
 
 ## API
 
@@ -228,7 +246,7 @@ type Backend interface          { Address() string }
 type WeightedBackend interface  { Backend; Weight() int }
 type LatencyBackend interface   { Backend; ActiveConnections() int; AverageLatency() float64 }
 
-// Connection release (LeastConn, LeastTime, ARB)
+// Connection release (LeastConn, ARB; no-op for LeastTime)
 type LeastConnReleaser interface { Release(backend Backend) }
 type P2CReleaser interface       { Release(backend Backend) }
 
