@@ -1,7 +1,6 @@
 package lb
 
 import (
-	"encoding/binary"
 	"math/rand/v2"
 	"sync"
 )
@@ -22,9 +21,7 @@ func NewRandom() Selector {
 // NewRandomWithSeed 创建随机选择器（使用指定种子）
 // 可用于测试场景，确保随机结果可复现
 func NewRandomWithSeed(seed int64) Selector {
-	var buf [8]byte
-	binary.LittleEndian.PutUint64(buf[:], uint64(seed))
-	seed1 := binary.LittleEndian.Uint64(buf[:])
+	seed1 := uint64(seed)
 	seed2 := seed1 ^ 0x9E3779B97F4A7C15
 	return &random{
 		rng:     rand.New(rand.NewPCG(seed1, seed2)),

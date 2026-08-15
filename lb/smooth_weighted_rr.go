@@ -11,7 +11,7 @@ import "sync"
 // 效果：权重高的后端更频繁被选中，但不会连续选中同一后端
 type smoothWeightedRR struct {
 	mu                  sync.Mutex
-	backends            []Backend // 缓存后端列表
+	backends            []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
 	currentWeight       []int     // 当前权重，每轮动态变化
 	effectiveWeight     []int     // 有效权重（初始化时固定）
 	totalWeight         int       // 所有 effectiveWeight 之和
@@ -39,11 +39,12 @@ func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 	ptr := backendsSlicePtr(backends)
 	if !(ptr == s.backendsSlicePtr && len(backends) == s.backendsSliceLen) {
 		fp := computeWeightedFingerprint(backends)
-		if fp != s.backendsFingerprint {
+		if fp != s.backendsFingerprint || len(s.currentWeight) == 0 {
 			s.rebuild(backends, fp)
 		}
 		s.backendsSlicePtr = ptr
 		s.backendsSliceLen = len(backends)
+		s.backends = backends
 	}
 
 	// SWRR 核心：currentWeight += effectiveWeight，选最大，减 totalWeight
@@ -65,13 +66,12 @@ func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 // 复用已有切片容量，避免不必要的堆分配
 func (s *smoothWeightedRR) rebuild(backends []Backend, fp uint64) {
 	n := len(backends)
-	s.backends = resizeSlice(s.backends, n)
+	s.backends = backends
 	s.currentWeight = resizeSlice(s.currentWeight, n)
 	s.effectiveWeight = resizeSlice(s.effectiveWeight, n)
 	s.totalWeight = 0
 	for i, b := range backends {
 		w := getWeight(b)
-		s.backends[i] = b
 		s.effectiveWeight[i] = w
 		s.currentWeight[i] = 0
 		s.totalWeight += w

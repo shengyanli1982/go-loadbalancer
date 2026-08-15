@@ -36,10 +36,12 @@ func init() {
 //   - 后端变化时最小化重映射（~1/N 的 key 需要迁移）
 //   - 加权公式 score = weight / (-log(normalizedHash)) 保留 Gumbel 分布特性
 type rendezvous struct {
-	mu                  sync.RWMutex
-	cachedAddrHashes    []uint64 // 预计算的 hash(address) 缓存，避免每次 Select 重复计算
-	cachedWeights       []int    // 权重缓存，rebuild 时填充
-	hasUniformWeights   bool
+	mu                sync.RWMutex
+	backends          []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	cachedAddrHashes  []uint64  // 预计算的 hash(address) 缓存，避免每次 Select 重复计算
+	cachedWeights     []int     // 权重缓存，rebuild 时填充
+	hasUniformWeights bool
+	rebuilds          int // rebuildCache 实际执行次数（仅测试观测用，始终在写锁内访问）
 	cacheSnapshot
 }
 
@@ -94,11 +96,17 @@ func (r *rendezvous) SelectByHash(backends []Backend, key []byte) Backend {
 	r.mu.RUnlock()
 
 	// 慢速路径：fingerprint 检查 + 可能重建缓存
+	// 重建与否只由 fingerprint（内容）决定；slicePtr/sliceLen 每次慢路径无条件更新，
+	// 避免"同内容新 slice"反复触发重建、或 fp 匹配但 ptr 失配时永久停留在慢路径
 	fp := computeWeightedFingerprint(backends)
 	r.mu.Lock()
-	if r.cachedAddrHashes == nil || fp != r.fingerprint || !(ptr == r.slicePtr && len(backends) == r.sliceLen) {
+	if r.cachedAddrHashes == nil || fp != r.fingerprint {
 		r.rebuildCache(backends, fp, ptr)
+		r.rebuilds++
 	}
+	r.slicePtr = ptr
+	r.sliceLen = len(backends)
+	r.backends = backends
 	result := r.selectFast(backends, key)
 	r.mu.Unlock()
 	return result
@@ -110,32 +118,32 @@ func (r *rendezvous) selectFast(backends []Backend, key []byte) Backend {
 	keyHash := xxhash.Sum64(key)
 
 	if r.hasUniformWeights {
+		bestIdx := 0
+		bestHash := uint64(0)
+		for i, ah := range r.cachedAddrHashes {
+			combined := hashCombine(keyHash, ah)
+			if combined > bestHash {
+				bestHash = combined
+				bestIdx = i
+			}
+		}
+		return backends[bestIdx]
+	}
+
 	bestIdx := 0
-	bestHash := uint64(0)
+	bestScore := -1.0
+
 	for i, ah := range r.cachedAddrHashes {
 		combined := hashCombine(keyHash, ah)
-		if combined > bestHash {
-			bestHash = combined
+		// fastNegLog2: -log2((combined+1)/2^64) via IEEE 754 Float64bits
+		// score = weight / (-log(combined+1/2^64)) = weight / (fastNegLog2 * math.Ln2)
+		negLog := fastNegLog2((float64(combined)+1.0)/maxUint64Plus1) * math.Ln2
+		score := float64(r.cachedWeights[i]) / negLog
+		if score > bestScore {
+			bestScore = score
 			bestIdx = i
 		}
 	}
-	return backends[bestIdx]
-}
-
-bestIdx := 0
-bestScore := -1.0
-
-for i, ah := range r.cachedAddrHashes {
-	combined := hashCombine(keyHash, ah)
-	// fastNegLog2: -log2((combined+1)/2^64) via IEEE 754 Float64bits
-	// score = weight / (-log(combined+1/2^64)) = weight / (fastNegLog2 * math.Ln2)
-	negLog := fastNegLog2((float64(combined)+1.0)/maxUint64Plus1) * math.Ln2
-	score := float64(r.cachedWeights[i]) / negLog
-	if score > bestScore {
-		bestScore = score
-		bestIdx = i
-	}
-}
 
 	return backends[bestIdx]
 }
@@ -184,7 +192,7 @@ func fastNegLog2(x float64) float64 {
 	}
 	v := math.Float64bits(x)
 	e := int((v>>52)&0x7FF) - 1023 // IEEE 754 指数
-	m := v & 0x000FFFFFFFFFFFFF     // 52-bit mantissa
+	m := v & 0x000FFFFFFFFFFFFF    // 52-bit mantissa
 
 	// 查找表索引: 取 mantissa top 8 bits
 	idx := (m >> 44) & 0xFF
@@ -195,5 +203,3 @@ func fastNegLog2(x float64) float64 {
 
 	return float64(-e) + negLog2M
 }
-
-

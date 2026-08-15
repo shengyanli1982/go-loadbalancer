@@ -3,8 +3,8 @@ package lb
 type leastConn struct {
 	connectionTracker
 
-	tree                *rbTree
-	posMap              []*rbNode
+	backends            []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	heap                idxHeap   // 索引堆：堆顶为最优后端（最小 conn/平局最小 index）
 	backendsFingerprint uint64
 	backendsSlicePtr    uintptr
 	backendsSliceLen    int
@@ -17,7 +17,6 @@ type LeastConnReleaser interface {
 func NewLeastConn() Selector {
 	return &leastConn{
 		connectionTracker: *newConnectionTracker(),
-		tree:              newRBTree(),
 	}
 }
 
@@ -31,19 +30,21 @@ func (l *leastConn) Select(backends []Backend) Backend {
 
 	ptr := backendsSlicePtr(backends)
 	if !(ptr == l.backendsSlicePtr && len(backends) == l.backendsSliceLen) {
-		fp := computeBackendsFingerprint(backends)
-		if fp != l.backendsFingerprint {
+		fp := computeWeightedFingerprint(backends)
+		if fp != l.backendsFingerprint || len(l.heap.heap) == 0 {
 			l.rebuildIndex(backends)
 			l.backendsFingerprint = fp
 		}
 		l.backendsSlicePtr = ptr
 		l.backendsSliceLen = len(backends)
+		l.backends = backends
 	}
 
 	n := len(backends)
 
+	// 平局处理：n < 32 线性路径用 rrIndex 轮转，n >= 32 堆路径固定最小 index；跨阈值轮转相位不保证一致（已审计接受）
 	if n >= TreeThresholdLeastConn {
-		return l.selectTree(backends, ptr)
+		return l.selectTree(backends)
 	}
 
 	return l.selectLinear(backends, n)
@@ -84,12 +85,12 @@ func (l *leastConn) selectLinear(backends []Backend, n int) Backend {
 			conn := l.connByIndex[i]
 			weight := l.weightCache[i]
 
-			if conn*bestWeight < bestConn*weight {
+			if int64(conn)*int64(bestWeight) < int64(bestConn)*int64(weight) {
 				bestConn = conn
 				bestWeight = weight
 				l.tiedIndices[0] = i
 				tieLen = 1
-			} else if conn*bestWeight == bestConn*weight {
+			} else if int64(conn)*int64(bestWeight) == int64(bestConn)*int64(weight) {
 				l.tiedIndices[tieLen] = i
 				tieLen++
 			}
@@ -103,21 +104,16 @@ func (l *leastConn) selectLinear(backends []Backend, n int) Backend {
 	return backends[bestIdx]
 }
 
-func (l *leastConn) selectTree(backends []Backend, ptr uintptr) Backend {
-	minNode := l.tree.min()
-	if minNode == nil {
+// selectTree 堆路径选择，O(logn)：取堆顶（最小 conn，平局最小 index），
+// conn++ 后 key 增大，单次 siftDown 修复堆序（等价于旧实现的 delete+reinsert 语义）
+func (l *leastConn) selectTree(backends []Backend) Backend {
+	if len(l.heap.heap) == 0 {
 		return backends[0]
 	}
 
-	bestIdx := minNode.index
-	l.tree.delete(minNode)
+	bestIdx := l.heap.heap[0]
 	l.connByIndex[bestIdx]++
-	minNode.color = red
-	minNode.left = l.tree.sentinel
-	minNode.right = l.tree.sentinel
-	minNode.parent = l.tree.sentinel
-	l.tree.insertNode(minNode, l.less)
-	l.posMap[bestIdx] = minNode
+	l.siftDown(0)
 
 	l.rrIndex++
 	return backends[bestIdx]
@@ -137,41 +133,125 @@ func (l *leastConn) Release(backend Backend) {
 		return
 	}
 
-	var node *rbNode
-	if l.posMap != nil && l.posMap[idx] != nil {
-		node = l.posMap[idx]
-		l.tree.delete(node)
-	}
-
+	// conn-- 使 key 减小，单次 siftUp 修复堆序（等价于旧实现的 delete+reinsert 语义）
 	l.connByIndex[idx]--
 	if conn, ok := l.connByAddr[addr]; ok && conn > 0 {
 		l.connByAddr[addr] = conn - 1
 	}
 
-	if node != nil {
-		node.color = red
-		node.left = l.tree.sentinel
-		node.right = l.tree.sentinel
-		node.parent = l.tree.sentinel
-		l.tree.insertNode(node, l.less)
-		l.posMap[idx] = node
+	if l.heap.pos != nil {
+		l.siftUp(l.heap.pos[idx])
 	}
 }
 
-func (l *leastConn) less(a, b *rbNode) bool {
+// siftDown key 增大后下沉修复堆序（Select 热路径）。
+// 与 selectLinear 一致按等权/加权分支，比较逻辑内联于循环，避免闭包间接调用开销。
+// 语义与 heapLess 完全一致：最小 conn 优先，平局取小 index。
+func (l *leastConn) siftDown(i int) {
+	heap := l.heap.heap
+	pos := l.heap.pos
+	n := len(heap)
+
 	if l.hasUniformWeights {
-		if l.connByIndex[a.index] != l.connByIndex[b.index] {
-			return l.connByIndex[a.index] < l.connByIndex[b.index]
+		conn := l.connByIndex
+		for {
+			lc := 2*i + 1
+			if lc >= n {
+				return
+			}
+			m := lc
+			if rc := lc + 1; rc < n && lessConn(conn[heap[rc]], heap[rc], conn[heap[lc]], heap[lc]) {
+				m = rc
+			}
+			if !lessConn(conn[heap[m]], heap[m], conn[heap[i]], heap[i]) {
+				return
+			}
+			ia, ib := heap[i], heap[m]
+			heap[i], heap[m] = ib, ia
+			pos[ia], pos[ib] = m, i
+			i = m
 		}
-		return a.index < b.index
 	}
 
-	scoreA := int64(l.connByIndex[a.index]) * int64(l.weightCache[b.index])
-	scoreB := int64(l.connByIndex[b.index]) * int64(l.weightCache[a.index])
-	if scoreA != scoreB {
-		return scoreA < scoreB
+	conn := l.connByIndex
+	weight := l.weightCache
+	for {
+		lc := 2*i + 1
+		if lc >= n {
+			return
+		}
+		m := lc
+		if rc := lc + 1; rc < n && lessWeighted(conn[heap[rc]], weight[heap[rc]], heap[rc], conn[heap[lc]], weight[heap[lc]], heap[lc]) {
+			m = rc
+		}
+		if !lessWeighted(conn[heap[m]], weight[heap[m]], heap[m], conn[heap[i]], weight[heap[i]], heap[i]) {
+			return
+		}
+		ia, ib := heap[i], heap[m]
+		heap[i], heap[m] = ib, ia
+		pos[ia], pos[ib] = m, i
+		i = m
 	}
-	return a.index < b.index
+}
+
+// siftUp key 减小后上浮修复堆序（Release 热路径），比较语义同 siftDown
+func (l *leastConn) siftUp(i int) {
+	heap := l.heap.heap
+	pos := l.heap.pos
+
+	if l.hasUniformWeights {
+		conn := l.connByIndex
+		for i > 0 {
+			p := (i - 1) / 2
+			if !lessConn(conn[heap[i]], heap[i], conn[heap[p]], heap[p]) {
+				return
+			}
+			ia, ib := heap[i], heap[p]
+			heap[i], heap[p] = ib, ia
+			pos[ia], pos[ib] = p, i
+			i = p
+		}
+		return
+	}
+
+	conn := l.connByIndex
+	weight := l.weightCache
+	for i > 0 {
+		p := (i - 1) / 2
+		if !lessWeighted(conn[heap[i]], weight[heap[i]], heap[i], conn[heap[p]], weight[heap[p]], heap[p]) {
+			return
+		}
+		ia, ib := heap[i], heap[p]
+		heap[i], heap[p] = ib, ia
+		pos[ia], pos[ib] = p, i
+		i = p
+	}
+}
+
+// lessConn 等权比较：conn 小者优先，平局索引小者优先（可内联）
+func lessConn(ci, i, cj, j int) bool {
+	if ci != cj {
+		return ci < cj
+	}
+	return i < j
+}
+
+// lessWeighted 加权比较：conn/weight 交叉乘法，平局索引小者优先（可内联）
+func lessWeighted(ci, wi, i, cj, wj, j int) bool {
+	si := int64(ci) * int64(wj)
+	sj := int64(cj) * int64(wi)
+	if si != sj {
+		return si < sj
+	}
+	return i < j
+}
+
+// heapLess 堆重建用比较函数（慢路径），选择语义与 siftDown/siftUp 一致
+func (l *leastConn) heapLess(i, j int) bool {
+	if l.hasUniformWeights {
+		return lessConn(l.connByIndex[i], i, l.connByIndex[j], j)
+	}
+	return lessWeighted(l.connByIndex[i], l.weightCache[i], i, l.connByIndex[j], l.weightCache[j], j)
 }
 
 func (l *leastConn) rebuildIndex(backends []Backend) {
@@ -180,5 +260,5 @@ func (l *leastConn) rebuildIndex(backends []Backend) {
 }
 
 func (l *leastConn) rebuildTree() {
-	rebuildRBTree(&l.tree, &l.posMap, len(l.connByIndex), l.less)
+	l.heap.reset(len(l.connByIndex), l.heapLess)
 }

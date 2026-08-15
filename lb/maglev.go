@@ -12,9 +12,10 @@ const (
 type maglev struct {
 	mu        sync.RWMutex
 	table     []int     // 查找表，大小为 tableSize
-	backends  []Backend // 缓存后端列表
+	backends  []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
 	tableSize int       // 表大小
 	n         int       // 后端数量
+	rebuilds  int       // buildTable 实际执行次数（仅测试观测用，始终在写锁内访问）
 	cacheSnapshot
 }
 
@@ -84,14 +85,18 @@ func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 	m.mu.RUnlock()
 
 	// 慢速路径：需要检查 fingerprint 并可能重建查找表
+	// 重建与否只由 fingerprint（内容）决定；slicePtr/sliceLen 每次慢路径无条件更新，
+	// 避免"同内容新 slice"反复触发全量重建
 	fp := computeBackendsFingerprint(backends)
 	m.mu.Lock()
-	if m.table == nil || fp != m.fingerprint || !(ptr == m.slicePtr && len(backends) == m.sliceLen) {
+	if m.table == nil || fp != m.fingerprint {
 		m.buildTable(backends)
 		m.fingerprint = fp
-		m.slicePtr = ptr
-		m.sliceLen = len(backends)
+		m.rebuilds++
 	}
+	m.slicePtr = ptr
+	m.sliceLen = len(backends)
+	m.backends = backends
 	h := hash64(key)
 	idx := h % uint64(m.tableSize)
 	result := m.table[idx]
@@ -106,8 +111,7 @@ func (m *maglev) SelectByHash(backends []Backend, key []byte) Backend {
 // 算法：为每个后端计算 offset 和 skip，使用轮询填充算法
 // 参考 Google 论文 "Maglev: A Fast and Reliable Software Network Load Balancer"
 func (m *maglev) buildTable(backends []Backend) {
-	m.backends = make([]Backend, len(backends))
-	copy(m.backends, backends)
+	m.backends = backends
 	m.n = len(backends)
 
 	if m.n == 0 {

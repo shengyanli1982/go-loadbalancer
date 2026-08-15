@@ -49,6 +49,36 @@ func BenchmarkConcurrent_P2C(b *testing.B) {
 	benchmarkConcurrentSelect(b, NewP2C(), generateBackends(100))
 }
 
+// BenchmarkConcurrent_LeastConn_SelectRelease 测量并发 Select/Release 成对交织的真实竞争（连接计数稳态，不单调增长）
+func BenchmarkConcurrent_LeastConn_SelectRelease(b *testing.B) {
+	selector := NewLeastConn()
+	releaser := selector.(LeastConnReleaser)
+	backends := generateBackends(100)
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			be := selector.Select(backends)
+			releaser.Release(be)
+		}
+	})
+}
+
+// BenchmarkConcurrent_P2C_SelectRelease 测量并发 Select/Release 成对交织的真实竞争（负载计数稳态，不单调增长）
+func BenchmarkConcurrent_P2C_SelectRelease(b *testing.B) {
+	selector := NewP2C()
+	releaser := selector.(P2CReleaser)
+	backends := generateBackends(100)
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			be := selector.Select(backends)
+			releaser.Release(be)
+		}
+	})
+}
+
 func BenchmarkConcurrent_RingHash(b *testing.B) {
 	benchmarkConcurrentSelectByHash(b, NewRingHash(&RingHashOptions{RingSize: 65536}), generateBackends(50), []byte("test-key-concurrent"))
 }

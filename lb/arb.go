@@ -17,11 +17,11 @@ type ARBOptions struct {
 type activeRequestBias struct {
 	connectionTracker
 	bias                float64
-	tree                *rbTree
-	posMap              []*rbNode
-	backendsFingerprint uint64  // 后端列表指纹，变化时清理过期条目
-	backendsSlicePtr    uintptr // 后端 slice 底层数组地址，用于快速缓存检测
-	backendsSliceLen    int     // 后端 slice 长度，配合指针做快速缓存检测
+	backends            []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	heap                idxHeap   // 索引堆：堆顶为最优后端（max score/平局最小 index）
+	backendsFingerprint uint64    // 后端列表指纹，变化时清理过期条目
+	backendsSlicePtr    uintptr   // 后端 slice 底层数组地址，用于快速缓存检测
+	backendsSliceLen    int       // 后端 slice 长度，配合指针做快速缓存检测
 }
 
 // NewActiveRequestBias 创建 Active Request Bias 选择器，bias=1.0
@@ -38,7 +38,6 @@ func NewActiveRequestBiasWithOptions(opts *ARBOptions) Selector {
 	return &activeRequestBias{
 		connectionTracker: *newConnectionTracker(),
 		bias:              bias,
-		tree:              newRBTree(),
 	}
 }
 
@@ -49,7 +48,7 @@ func NewActiveRequestBiasWithOptions(opts *ARBOptions) Selector {
 //	bias=0 时退化为 RR（score=weight 是常量）
 //	等权重时 score = 1/(conns+1)^bias，bias=1 时进一步简化为 1/(conns+1)
 //	遇到平局时将索引记录到 tiedIndices，扫描结束后用 rrIndex % tieLen 选取代
-//	N >= arbTreeThreshold 时走 rbTree O(log n) 路径
+//	N >= arbTreeThreshold 时走索引堆 O(log n) 路径
 //	最后递增选中后端的连接数
 func (a *activeRequestBias) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
@@ -62,14 +61,15 @@ func (a *activeRequestBias) Select(backends []Backend) Backend {
 	// 快速路径：同一个 slice → 跳过 fingerprint 计算和索引重建
 	ptr := backendsSlicePtr(backends)
 	if !(ptr == a.backendsSlicePtr && len(backends) == a.backendsSliceLen) {
-		fp := computeBackendsFingerprint(backends)
-		if fp != a.backendsFingerprint {
+		fp := computeWeightedFingerprint(backends)
+		if fp != a.backendsFingerprint || len(a.heap.heap) == 0 {
 			a.connectionTracker.rebuildIndex(backends)
 			a.rebuildTree()
 			a.backendsFingerprint = fp
 		}
 		a.backendsSlicePtr = ptr
 		a.backendsSliceLen = len(backends)
+		a.backends = backends
 	}
 
 	n := len(backends)
@@ -87,7 +87,8 @@ func (a *activeRequestBias) Select(backends []Backend) Backend {
 		return backends[bestIdx]
 	}
 
-	// 大规模后端：rbTree O(log n) 路径
+	// 大规模后端：索引堆 O(log n) 路径
+	// 平局处理：n < 32 线性路径用 rrIndex 轮转，n >= 32 堆路径固定最小 index；跨阈值轮转相位不保证一致（已审计接受）
 	if n >= TreeThresholdARB {
 		return a.selectTree(backends)
 	}
@@ -96,23 +97,16 @@ func (a *activeRequestBias) Select(backends []Backend) Backend {
 	return a.selectLinear(backends, n)
 }
 
-// selectTree 基于 rbTree 的选择路径，O(log n)
-// 取树中最右侧节点（max score），更新计数后重新插入
+// selectTree 堆路径选择，O(logn)：取堆顶（max score，平局最小 index），
+// conn++ 使 score 降低，单次 siftDown 修复堆序（等价于旧实现的 delete+reinsert 语义）
 func (a *activeRequestBias) selectTree(backends []Backend) Backend {
-	maxNode := a.tree.max()
-	if maxNode == nil {
+	if len(a.heap.heap) == 0 {
 		return backends[0]
 	}
 
-	bestIdx := maxNode.index
-	a.tree.delete(maxNode)
+	bestIdx := a.heap.heap[0]
 	a.connByIndex[bestIdx]++
-	maxNode.color = red
-	maxNode.left = a.tree.sentinel
-	maxNode.right = a.tree.sentinel
-	maxNode.parent = a.tree.sentinel
-	a.tree.insertNode(maxNode, a.less)
-	a.posMap[bestIdx] = maxNode
+	a.siftDown(0)
 
 	a.rrIndex++
 	return backends[bestIdx]
@@ -192,7 +186,7 @@ func (a *activeRequestBias) selectLinear(backends []Backend, n int) Backend {
 }
 
 // Release 释放一个后端的连接计数
-// 当存在 rbTree 时，同步更新树节点位置
+// 堆路径下 conn-- 使 score 升高，单次 siftUp 修复堆序
 func (a *activeRequestBias) Release(backend Backend) {
 	if backend == nil {
 		return
@@ -207,63 +201,167 @@ func (a *activeRequestBias) Release(backend Backend) {
 		return
 	}
 
-	// 若树路径已启用，先从树中移除节点
-	var node *rbNode
-	if a.posMap != nil && a.posMap[idx] != nil {
-		node = a.posMap[idx]
-		a.tree.delete(node)
-	}
-
 	// 更新计数
 	a.connByIndex[idx]--
 	if conn, ok := a.connByAddr[addr]; ok && conn > 0 {
 		a.connByAddr[addr] = conn - 1
 	}
 
-	// 重新插入树中（新位置反映更新后的计数）
-	if node != nil {
-		node.color = red
-		node.left = a.tree.sentinel
-		node.right = a.tree.sentinel
-		node.parent = a.tree.sentinel
-		a.tree.insertNode(node, a.less)
-		a.posMap[idx] = node
+	// 堆路径已启用时修复堆序（等价于旧实现的 delete+reinsert 语义）
+	if a.heap.pos != nil {
+		a.siftUp(a.heap.pos[idx])
 	}
 }
 
-// less 定义 rbTree 的排序规则（标准 BST 语义，less(a,b)=true 表示 a 排在 b 左侧）
-// ARB 选择 score 最大的后端，因此将 max score 置于树最右侧：
-//   - score1 < score2 → true（低分在左）
-//   - 平局时，小 index 置于右侧（max() 优先选小 index，与 LeastConn 行为一致）
-func (a *activeRequestBias) less(n1, n2 *rbNode) bool {
+// siftDown key 变差后下沉修复堆序（Select 热路径：conn++ 使 score 降低）。
+// 语义：max score 优先，平局取小 index。
+// bias=1 等权/加权分支内联比较，避免闭包间接调用开销。
+func (a *activeRequestBias) siftDown(i int) {
+	heap := a.heap.heap
+	pos := a.heap.pos
+	n := len(heap)
+
+	if a.bias == 1.0 {
+		conn := a.connByIndex
+		if a.hasUniformWeights {
+			// score = 1/(c+1)：conn 小者 score 高，平局索引小者优先（同 leastConn）
+			for {
+				lc := 2*i + 1
+				if lc >= n {
+					return
+				}
+				m := lc
+				if rc := lc + 1; rc < n && lessConn(conn[heap[rc]], heap[rc], conn[heap[lc]], heap[lc]) {
+					m = rc
+				}
+				if !lessConn(conn[heap[m]], heap[m], conn[heap[i]], heap[i]) {
+					return
+				}
+				ia, ib := heap[i], heap[m]
+				heap[i], heap[m] = ib, ia
+				pos[ia], pos[ib] = m, i
+				i = m
+			}
+		}
+		weight := a.weightCache
+		// score = w/(c+1)：i 更优 ↔ w_i*(c_j+1) > w_j*(c_i+1)
+		for {
+			lc := 2*i + 1
+			if lc >= n {
+				return
+			}
+			m := lc
+			if rc := lc + 1; rc < n && betterARBWeighted(conn[heap[rc]], weight[heap[rc]], heap[rc], conn[heap[lc]], weight[heap[lc]], heap[lc]) {
+				m = rc
+			}
+			if !betterARBWeighted(conn[heap[m]], weight[heap[m]], heap[m], conn[heap[i]], weight[heap[i]], heap[i]) {
+				return
+			}
+			ia, ib := heap[i], heap[m]
+			heap[i], heap[m] = ib, ia
+			pos[ia], pos[ib] = m, i
+			i = m
+		}
+	}
+
+	// 通用 0<bias<1 浮点路径（低频）
+	for {
+		lc := 2*i + 1
+		if lc >= n {
+			return
+		}
+		m := lc
+		if rc := lc + 1; rc < n && a.betterScore(heap[rc], heap[lc]) {
+			m = rc
+		}
+		if !a.betterScore(heap[m], heap[i]) {
+			return
+		}
+		ia, ib := heap[i], heap[m]
+		heap[i], heap[m] = ib, ia
+		pos[ia], pos[ib] = m, i
+		i = m
+	}
+}
+
+// siftUp key 变优后上浮修复堆序（Release 热路径：conn-- 使 score 升高）
+func (a *activeRequestBias) siftUp(i int) {
+	heap := a.heap.heap
+	pos := a.heap.pos
+
+	if a.bias == 1.0 {
+		conn := a.connByIndex
+		if a.hasUniformWeights {
+			for i > 0 {
+				p := (i - 1) / 2
+				if !lessConn(conn[heap[i]], heap[i], conn[heap[p]], heap[p]) {
+					return
+				}
+				ia, ib := heap[i], heap[p]
+				heap[i], heap[p] = ib, ia
+				pos[ia], pos[ib] = p, i
+				i = p
+			}
+			return
+		}
+		weight := a.weightCache
+		for i > 0 {
+			p := (i - 1) / 2
+			if !betterARBWeighted(conn[heap[i]], weight[heap[i]], heap[i], conn[heap[p]], weight[heap[p]], heap[p]) {
+				return
+			}
+			ia, ib := heap[i], heap[p]
+			heap[i], heap[p] = ib, ia
+			pos[ia], pos[ib] = p, i
+			i = p
+		}
+		return
+	}
+
+	for i > 0 {
+		p := (i - 1) / 2
+		if !a.betterScore(heap[i], heap[p]) {
+			return
+		}
+		ia, ib := heap[i], heap[p]
+		heap[i], heap[p] = ib, ia
+		pos[ia], pos[ib] = p, i
+		i = p
+	}
+}
+
+// betterARBWeighted 加权 bias=1 比较：score=w/(c+1)，score 高者优先，平局索引小者优先（可内联）
+func betterARBWeighted(ci, wi, i, cj, wj, j int) bool {
+	lhs := int64(wi) * int64(cj+1)
+	rhs := int64(wj) * int64(ci+1)
+	if lhs != rhs {
+		return lhs > rhs
+	}
+	return i < j
+}
+
+// betterScore 通用 score 比较（0<bias<1 浮点路径）：score 高者优先，平局索引小者优先
+func (a *activeRequestBias) betterScore(i, j int) bool {
+	si := float64(a.weightCache[i]) / math.Pow(float64(a.connByIndex[i]+1), a.bias)
+	sj := float64(a.weightCache[j]) / math.Pow(float64(a.connByIndex[j]+1), a.bias)
+	if si != sj {
+		return si > sj
+	}
+	return i < j
+}
+
+// heapLess 堆重建用比较函数（慢路径），语义与 siftDown/siftUp 一致
+func (a *activeRequestBias) heapLess(i, j int) bool {
 	if a.bias == 1.0 {
 		if a.hasUniformWeights {
-			// score = 1/(c+1)：score1 < score2 ↔ c1 > c2
-			c1, c2 := a.connByIndex[n1.index], a.connByIndex[n2.index]
-			if c1 != c2 {
-				return c1 > c2
-			}
-			return n1.index > n2.index // 平局：小 index 在右侧（"更大"）
+			return lessConn(a.connByIndex[i], i, a.connByIndex[j], j)
 		}
-		// 加权 bias=1：score = w/(c+1)
-		// score1 < score2 ↔ w1*(c2+1) < w2*(c1+1)
-		lhs := int64(a.weightCache[n1.index]) * int64(a.connByIndex[n2.index]+1)
-		rhs := int64(a.weightCache[n2.index]) * int64(a.connByIndex[n1.index]+1)
-		if lhs != rhs {
-			return lhs < rhs
-		}
-		return n1.index > n2.index
+		return betterARBWeighted(a.connByIndex[i], a.weightCache[i], i, a.connByIndex[j], a.weightCache[j], j)
 	}
-	// 通用路径（0 < bias < 1）：浮点比较
-	score1 := float64(a.weightCache[n1.index]) / math.Pow(float64(a.connByIndex[n1.index]+1), a.bias)
-	score2 := float64(a.weightCache[n2.index]) / math.Pow(float64(a.connByIndex[n2.index]+1), a.bias)
-	if score1 != score2 {
-		return score1 < score2
-	}
-	return n1.index > n2.index
+	return a.betterScore(i, j)
 }
 
-// rebuildTree 在 rebuildIndex 后重建 rbTree（所有节点零分配复用）
+// rebuildTree 在 rebuildIndex 后重建索引堆（复用容量，O(n) 堆化）
 func (a *activeRequestBias) rebuildTree() {
-	rebuildRBTree(&a.tree, &a.posMap, len(a.connByIndex), a.less)
+	a.heap.reset(len(a.connByIndex), a.heapLess)
 }

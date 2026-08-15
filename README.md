@@ -123,7 +123,7 @@ fmt.Println(edf.Select(backends).Address())
 
 ### Connection-aware Algorithms
 
-LeastConn, ARB, and LeastTime track an internal connection counter. Call `Release` when a request completes to decrement the counter:
+LeastConn and ARB track an internal connection counter. Call `Release` when a request completes to decrement the counter:
 
 ```go
 selector := lb.NewLeastConn()
@@ -138,23 +138,21 @@ if releaser, ok := selector.(lb.LeastConnReleaser); ok {
 
 ### Latency-aware (Least Time)
 
-`LeastTime` requires backends implementing `LatencyBackend` to inject observed latency:
+`LeastTime` requires backends implementing `LatencyBackend` to inject observed latency and connection counts:
 
 ```go
 // Backend must implement LatencyBackend:
 type LatencyBackend interface {
 	Backend
-	ActiveConnections() int
+	ActiveConnections() int  // caller-injected active connection count
 	AverageLatency() float64 // milliseconds or microseconds (relative ordering matters)
 }
 
 selector := lb.NewLeastTime()
 backend := selector.Select(latencyBackends)
-
-if releaser, ok := selector.(lb.LeastConnReleaser); ok {
-	releaser.Release(backend)
-}
 ```
+
+`LeastTime` does not keep an internal connection counter — connection counts come from each backend's `ActiveConnections()` (caller-injected). It implements `LeastConnReleaser` for interface compatibility, but `Release` does not affect its selection.
 
 ### Active Request Bias (Envoy WLR)
 
@@ -228,7 +226,7 @@ type Backend interface          { Address() string }
 type WeightedBackend interface  { Backend; Weight() int }
 type LatencyBackend interface   { Backend; ActiveConnections() int; AverageLatency() float64 }
 
-// Connection release (LeastConn, LeastTime, ARB)
+// Connection release (LeastConn, ARB; no-op for LeastTime)
 type LeastConnReleaser interface { Release(backend Backend) }
 type P2CReleaser interface       { Release(backend Backend) }
 

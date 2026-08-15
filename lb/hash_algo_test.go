@@ -241,3 +241,73 @@ func TestMaglev_DifferentKeysSelectDifferentBackends(t *testing.T) {
 	assert.GreaterOrEqual(t, len(selected), 3,
 		"expected at least 3 different backends selected, got %d: %v", len(selected), selected)
 }
+
+// TestFingerprint_Injectivity 指纹单射性回归测试（固化审计 #P1-4 的 length-prefix 修复）
+//
+// 背景：基于 "|" 分隔符的编码会让不同的后端列表产生相同指纹，
+// 例如 fp(["a|b","c"]) == fp(["a","b|c"])，导致所有指纹系选择器把
+// 含 "|" 的地址列表迁移误判为"未变化"而跳过内部数据结构重建。
+//
+// 历史教训（禁止再次为性能移除 length-prefix）：
+//   - 012e12a 用 length-prefix 修复该碰撞
+//   - 3b3c726 回归到 "|" 分隔符，碰撞重现
+//   - e83fe0c 仅修复加权路径，本测试固化双路径的完整修复
+func TestFingerprint_Injectivity(t *testing.T) {
+	t.Run("BackendsFingerprint_NoCollision", func(t *testing.T) {
+		cases := []struct {
+			name string
+			a    []Backend
+			b    []Backend
+		}{
+			{"separator pipe collision", newTestBackends("a|b", "c"), newTestBackends("a", "b|c")},
+			{"adjacent boundary shift", newTestBackends("ab", "c"), newTestBackends("a", "bc")},
+			{"concat to single element", newTestBackends("a", "b"), newTestBackends("ab")},
+			{"empty list vs single empty address", newTestBackends(), newTestBackends("")},
+			{"order sensitive", newTestBackends("a", "b"), newTestBackends("b", "a")},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				assert.NotEqual(t, computeBackendsFingerprint(tc.a), computeBackendsFingerprint(tc.b),
+					"fingerprint collision between different backend lists")
+			})
+		}
+	})
+
+	t.Run("WeightedFingerprint_NoCollision", func(t *testing.T) {
+		// 地址边界歧义：["a|b","c"] 与 ["a","b|c"]（权重均为 1）
+		sepA := []Backend{NewWeightedBackend("a|b", 1), NewWeightedBackend("c", 1)}
+		sepB := []Backend{NewWeightedBackend("a", 1), NewWeightedBackend("b|c", 1)}
+		assert.NotEqual(t, computeWeightedFingerprint(sepA), computeWeightedFingerprint(sepB),
+			"fingerprint collision between different weighted backend lists")
+
+		// 地址相同、权重分布不同 → 指纹必须不同
+		wA := []Backend{NewWeightedBackend("a", 1), NewWeightedBackend("b", 2)}
+		wB := []Backend{NewWeightedBackend("a", 2), NewWeightedBackend("b", 1)}
+		assert.NotEqual(t, computeWeightedFingerprint(wA), computeWeightedFingerprint(wB))
+
+		// 单一地址、不同权重 → 指纹必须不同
+		sA := []Backend{NewWeightedBackend("a", 1)}
+		sB := []Backend{NewWeightedBackend("a", 2)}
+		assert.NotEqual(t, computeWeightedFingerprint(sA), computeWeightedFingerprint(sB))
+	})
+
+	t.Run("WeightedFingerprint_WeightSemanticsPreserved", func(t *testing.T) {
+		// 保留现有语义：非 WeightedBackend 或权重 <= 0 一律记为 1
+		fp := computeWeightedFingerprint([]Backend{NewWeightedBackend("a", 1)})
+		assert.Equal(t, fp, computeWeightedFingerprint([]Backend{NewBackend("a")}),
+			"non-weighted backend should be treated as weight 1")
+		assert.Equal(t, fp, computeWeightedFingerprint([]Backend{NewWeightedBackend("a", 0)}),
+			"zero weight should be treated as weight 1")
+		assert.Equal(t, fp, computeWeightedFingerprint([]Backend{NewWeightedBackend("a", -5)}),
+			"negative weight should be treated as weight 1")
+	})
+
+	t.Run("Stability", func(t *testing.T) {
+		// 相同输入多次计算结果稳定
+		bs := newTestBackends("a", "b|c", "d")
+		assert.Equal(t, computeBackendsFingerprint(bs), computeBackendsFingerprint(bs))
+
+		ws := []Backend{NewWeightedBackend("a|b", 3), NewWeightedBackend("c", 1)}
+		assert.Equal(t, computeWeightedFingerprint(ws), computeWeightedFingerprint(ws))
+	})
+}

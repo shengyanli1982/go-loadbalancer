@@ -115,14 +115,29 @@ func BenchmarkURIHash(b *testing.B) {
 	}
 }
 
-func BenchmarkRingHash(b *testing.B) {
+// BenchmarkRingHash_Select 测量 Select 包装路径（randomKey8 + SelectByHash，命中缓存快速路径）
+func BenchmarkRingHash_Select(b *testing.B) {
 	backends := generateBackends(50)
-	selector := NewRingHash(&RingHashOptions{RingSize: 65536})
-	key := []byte("test-key")
+	selector := NewRingHash(nil)
 
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		selector.SelectByHash(backends, key)
+		selector.Select(backends)
+	}
+}
+
+func BenchmarkRingHash_Select_Ext(b *testing.B) {
+	for _, n := range []int{10, 50, 100, 500, 1000} {
+		b.Run(fmt.Sprintf("%d_backends", n), func(b *testing.B) {
+			backends := generateBackends(n)
+			selector := NewRingHash(nil)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				selector.Select(backends)
+			}
+		})
 	}
 }
 
@@ -183,6 +198,18 @@ func BenchmarkMaglev_SelectByHash_Ext(b *testing.B) {
 				selector.SelectByHash(backends, key)
 			}
 		})
+	}
+}
+
+// BenchmarkRendezvous_Select 补齐单协程 Select 包装路径（randomKey8 + SelectByHash，命中缓存快速路径）
+func BenchmarkRendezvous_Select(b *testing.B) {
+	backends := generateBackends(50)
+	selector := NewRendezvous()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		selector.Select(backends)
 	}
 }
 

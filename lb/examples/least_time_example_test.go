@@ -12,10 +12,10 @@ type latencyBackend struct {
 	conns   int
 }
 
-func (b *latencyBackend) Address() string           { return b.address }
-func (b *latencyBackend) Weight() int               { return 1 }
-func (b *latencyBackend) ActiveConnections() int    { return b.conns }
-func (b *latencyBackend) AverageLatency() float64   { return b.latency }
+func (b *latencyBackend) Address() string         { return b.address }
+func (b *latencyBackend) Weight() int             { return 1 }
+func (b *latencyBackend) ActiveConnections() int  { return b.conns }
+func (b *latencyBackend) AverageLatency() float64 { return b.latency }
 
 func ExampleNewLeastTime() {
 	selector := lb.NewLeastTime()
