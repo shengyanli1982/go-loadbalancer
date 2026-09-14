@@ -193,8 +193,8 @@ func (m *maglev) buildTable(backends []Backend) *maglevData {
 	cursor := tmp[:n:n]
 	skips := tmp[n:]
 	for i, b := range backends {
-		cursor[i] = int(hash64([]byte("offset:"+b.Address())) % uint64(m.tableSize))
-		skips[i] = int(hash64([]byte("skip:"+b.Address()))%uint64(m.tableSize-1)) + 1
+		cursor[i] = int(hash64String("offset:"+b.Address()) % uint64(m.tableSize))
+		skips[i] = int(hash64String("skip:"+b.Address())%uint64(m.tableSize-1)) + 1
 	}
 
 	// 轮询填充算法：cursor[i] 沿 (offset + k·skip) mod tableSize 序列就地推进。
