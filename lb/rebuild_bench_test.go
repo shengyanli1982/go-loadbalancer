@@ -36,6 +36,23 @@ func rebuildWeightedBackendPairs(n int) (backendsA, backendsB []Backend) {
 	return backendsA, backendsB
 }
 
+// rebuildLatencyBackendPairs 构造两份内容不同的等长 LatencyBackend slice，交替使用强制指纹失配。
+// 复用 least_time_test.go 的 ltConfig/newLatencyBackends（同包、不绑定 testing.T）。
+// leastTime 必须喂 LatencyBackend：否则所有后端取 +Inf 惩罚哨兵、恒平局退化为 RR，
+// 评分路径（AverageLatency/ActiveConnections 接口调用 + weightCache 除法）测不到真实成本。
+func rebuildLatencyBackendPairs(n int) (backendsA, backendsB []Backend) {
+	configsA := make([]ltConfig, n)
+	configsB := make([]ltConfig, n)
+	for i := 0; i < n; i++ {
+		weight := (i % 10) + 1
+		latency := float64(i*5 + 1)
+		conns := i % 10
+		configsA[i] = ltConfig{addr: fmt.Sprintf("backend-a-%d:8080", i), weight: weight, latency: latency, conns: conns}
+		configsB[i] = ltConfig{addr: fmt.Sprintf("backend-b-%d:8080", i), weight: weight, latency: latency, conns: conns}
+	}
+	return newLatencyBackends(configsA), newLatencyBackends(configsB)
+}
+
 // BenchmarkRebuild_RingHash 测量 ringHash 慢路径重建成本（每次迭代重建完整哈希环并排序）
 func BenchmarkRebuild_RingHash(b *testing.B) {
 	backendsA, backendsB := rebuildBackendPairs(rebuildBenchBackends)
@@ -115,6 +132,66 @@ func BenchmarkRebuild_SmoothWeightedRR(b *testing.B) {
 func BenchmarkRebuild_LeastConn(b *testing.B) {
 	backendsA, backendsB := rebuildBackendPairs(rebuildBenchBackends)
 	selector := NewLeastConn()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if i&1 == 0 {
+			selector.Select(backendsA)
+		} else {
+			selector.Select(backendsB)
+		}
+	}
+}
+
+// BenchmarkRebuild_P2C 测量 p2c 慢路径重建成本（每次迭代重建 loads/addrs/addrIndex 并原子发布快照）
+func BenchmarkRebuild_P2C(b *testing.B) {
+	backendsA, backendsB := rebuildBackendPairs(rebuildBenchBackends)
+	selector := NewP2C()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if i&1 == 0 {
+			selector.Select(backendsA)
+		} else {
+			selector.Select(backendsB)
+		}
+	}
+}
+
+// BenchmarkRebuild_ARB 测量 activeRequestBias 慢路径重建成本（每次迭代重建连接索引并重建索引堆）
+func BenchmarkRebuild_ARB(b *testing.B) {
+	backendsA, backendsB := rebuildWeightedBackendPairs(rebuildBenchBackends)
+	selector := NewActiveRequestBiasWithOptions(&ARBOptions{Bias: 1.0})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if i&1 == 0 {
+			selector.Select(backendsA)
+		} else {
+			selector.Select(backendsB)
+		}
+	}
+}
+
+// BenchmarkRebuild_LeastTime 测量 leastTime 慢路径重建成本（每次迭代重建连接索引并预断言 LatencyBackend 缓存）
+func BenchmarkRebuild_LeastTime(b *testing.B) {
+	backendsA, backendsB := rebuildLatencyBackendPairs(rebuildBenchBackends)
+	selector := NewLeastTime()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if i&1 == 0 {
+			selector.Select(backendsA)
+		} else {
+			selector.Select(backendsB)
+		}
+	}
+}
+
+// BenchmarkRebuild_EDF 测量 edf 慢路径重建成本（每次迭代重建权重缓存并 Floyd 批量建堆）
+func BenchmarkRebuild_EDF(b *testing.B) {
+	backendsA, backendsB := rebuildWeightedBackendPairs(rebuildBenchBackends)
+	selector := NewEDF()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

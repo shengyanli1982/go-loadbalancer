@@ -22,13 +22,21 @@ func (a edfItem) less(b edfItem) bool {
 // 效果：在完整周期内严格按权重比例分配流量，且分布均匀
 // 使用 O(log n) 最小堆替代 O(n) 线性扫描，大幅提升大规模后端列表的性能
 type edf struct {
-	mu            sync.Mutex
-	backends      []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
-	pq            []edfItem // 优先队列（最小堆），按 deadline 排序（手写 sift，零分配）
-	cachedWeights []int     // 权重缓存，rebuild 时填充
+	mu       sync.Mutex
+	backends []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	// pq 是按 deadline 排序的最小堆（手写 sift，零分配）。不复用 idxHeap 的原因：
+	// idxHeap 是索引堆（heap []int 存后端索引，key 须经外部数组按下标间接寻址），
+	// 适合 key 存放在按索引访问的数组里的场景；而 edf 的 key 是 float64 deadline，
+	// 直接存进 edfItem 值里，swap 时 deadline+index 一并搬移，比较/下滤无需间接寻址，
+	// 值堆比索引堆省一次查表。两者能力重叠（都只需「改根 + siftDown」），但 key 存储模型不同，
+	// 保留值堆是合理取舍，故不合并。
+	pq            []edfItem
+	cachedWeights []int // 权重缓存，rebuild 时填充
 	cacheSnapshot
 }
 
+// NewEDF creates an earliest-deadline-first weighted round-robin selector.
+//
 // NewEDF 创建 EDF 调度选择器
 func NewEDF() Selector {
 	return &edf{}
@@ -77,12 +85,9 @@ func (e *edf) rebuild(backends []Backend, fp uint64) {
 	n := len(backends)
 	e.cachedWeights = resizeSlice(e.cachedWeights, n)
 
-	// 复用堆 slice 容量，避免重新分配
-	if cap(e.pq) >= n {
-		e.pq = e.pq[:n]
-	} else {
-		e.pq = make([]edfItem, n)
-	}
+	// 复用堆 slice 容量，避免重新分配；resizeSlice 返回 s[:n]，把 len 一并拉满，
+	// 消除「按 cap 判断却按绝对下标写入」的越界隐患（与本函数上方 cachedWeights 一致）
+	e.pq = resizeSlice(e.pq, n)
 	for i, b := range backends {
 		e.cachedWeights[i] = getWeight(b)
 		e.pq[i] = edfItem{deadline: 0, index: i}

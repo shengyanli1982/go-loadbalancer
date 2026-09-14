@@ -18,4 +18,11 @@ func ExampleNewRoundRobin() {
 		backend := selector.Select(backends)
 		fmt.Println(backend.Address())
 	}
+	// Output:
+	// 192.168.1.1:8080
+	// 192.168.1.2:8080
+	// 192.168.1.3:8080
+	// 192.168.1.1:8080
+	// 192.168.1.2:8080
+	// 192.168.1.3:8080
 }

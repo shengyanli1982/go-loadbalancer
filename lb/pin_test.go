@@ -15,19 +15,21 @@ type pinProbe struct {
 }
 
 // pinProbes 覆盖全部 10 个依赖 slicePtr+sliceLen fast path 的缓存型 selector，
-// 其 pin 均在慢路径与 slicePtr 同步更新
+// 其 pin 均在慢路径与 slicePtr 同步更新。
+// p2c/maglev/ringHash/rendezvous 为 RCU 型：状态经 atomic.Pointer 发布为不可变快照，
+// pin 从已发布快照上读取（即读者实际观测到的那份状态）。
 func pinProbes() []pinProbe {
 	return []pinProbe{
 		{"weightedRR", NewWeightedRR, func(s Selector) []Backend { return s.(*weightedRR).backends }},
 		{"edf", NewEDF, func(s Selector) []Backend { return s.(*edf).backends }},
-		{"leastConn", NewLeastConn, func(s Selector) []Backend { return s.(*leastConn).backends }},
-		{"activeRequestBias", NewActiveRequestBias, func(s Selector) []Backend { return s.(*activeRequestBias).backends }},
+		{"leastConn", func() Selector { return NewLeastConn() }, func(s Selector) []Backend { return s.(*leastConn).backends }},
+		{"activeRequestBias", func() Selector { return NewActiveRequestBias() }, func(s Selector) []Backend { return s.(*activeRequestBias).backends }},
 		{"leastTime", NewLeastTime, func(s Selector) []Backend { return s.(*leastTime).backends }},
-		{"p2c", NewP2C, func(s Selector) []Backend { return s.(*p2c).data.Load().backends }},
-		{"maglev", func() Selector { return NewMaglev(nil) }, func(s Selector) []Backend { return s.(*maglev).backends }},
-		{"ringHash", func() Selector { return NewRingHash(nil) }, func(s Selector) []Backend { return s.(*ringHash).backends }},
+		{"p2c", func() Selector { return NewP2C() }, func(s Selector) []Backend { return s.(*p2c).data.Load().backends }},
+		{"maglev", func() Selector { return NewMaglev(nil) }, func(s Selector) []Backend { return s.(*maglev).data.Load().backends }},
+		{"ringHash", func() Selector { return NewRingHash(nil) }, func(s Selector) []Backend { return s.(*ringHash).data.Load().backends }},
 		{"smoothWeightedRR", NewSmoothWeightedRR, func(s Selector) []Backend { return s.(*smoothWeightedRR).backends }},
-		{"rendezvous", func() Selector { return NewRendezvous() }, func(s Selector) []Backend { return s.(*rendezvous).backends }},
+		{"rendezvous", func() Selector { return NewRendezvous() }, func(s Selector) []Backend { return s.(*rendezvous).data.Load().backends }},
 	}
 }
 

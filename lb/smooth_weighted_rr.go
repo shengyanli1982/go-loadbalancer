@@ -10,16 +10,16 @@ import "sync"
 //
 // 效果：权重高的后端更频繁被选中，但不会连续选中同一后端
 type smoothWeightedRR struct {
-	mu                  sync.Mutex
-	backends            []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
-	currentWeight       []int     // 当前权重，每轮动态变化
-	effectiveWeight     []int     // 有效权重（初始化时固定）
-	totalWeight         int       // 所有 effectiveWeight 之和
-	backendsFingerprint uint64    // 后端列表指纹（含权重），变化时触发重建
-	backendsSlicePtr    uintptr   // 后端 slice 底层数组地址，用于快速缓存检测
-	backendsSliceLen    int       // 后端 slice 长度，配合指针做快速缓存检测
+	mu              sync.Mutex
+	backends        []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	currentWeight   []int     // 当前权重，每轮动态变化
+	effectiveWeight []int     // 有效权重（初始化时固定）
+	totalWeight     int       // 所有 effectiveWeight 之和
+	cacheSnapshot
 }
 
+// NewSmoothWeightedRR creates a smooth weighted round-robin selector.
+//
 // NewSmoothWeightedRR 创建平滑加权轮询选择器
 func NewSmoothWeightedRR() Selector {
 	return &smoothWeightedRR{}
@@ -37,13 +37,13 @@ func (s *smoothWeightedRR) Select(backends []Backend) Backend {
 
 	// 快速路径：同一个 slice → 跳过 fingerprint 计算
 	ptr := backendsSlicePtr(backends)
-	if !(ptr == s.backendsSlicePtr && len(backends) == s.backendsSliceLen) {
+	if !(ptr == s.slicePtr && len(backends) == s.sliceLen) {
 		fp := computeWeightedFingerprint(backends)
-		if fp != s.backendsFingerprint || len(s.currentWeight) == 0 {
+		if fp != s.fingerprint || len(s.currentWeight) == 0 {
 			s.rebuild(backends, fp)
 		}
-		s.backendsSlicePtr = ptr
-		s.backendsSliceLen = len(backends)
+		s.slicePtr = ptr
+		s.sliceLen = len(backends)
 		s.backends = backends
 	}
 
@@ -76,5 +76,5 @@ func (s *smoothWeightedRR) rebuild(backends []Backend, fp uint64) {
 		s.currentWeight[i] = 0
 		s.totalWeight += w
 	}
-	s.backendsFingerprint = fp
+	s.fingerprint = fp
 }

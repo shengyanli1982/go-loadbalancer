@@ -67,6 +67,9 @@ func computeBackendsFingerprint(backends []Backend) uint64 {
 //
 // 权重语义保持不变：非 WeightedBackend 或权重 <= 0 记为 1。
 //
+// 不变式：内部缓存必须是 addr+weight 的纯派生数据；缓存「实例行为」（如接口值）
+// 的算法必须在 fp 匹配但 slice 更换时重绑（见 leastTime.refreshLatencyCache）。
+//
 // 历史教训（切勿再为性能移除 length-prefix）：
 // 012e12a 修复 → 3b3c726 回归 → 本次恢复；
 // 行为由 TestFingerprint_Injectivity 回归测试固化。

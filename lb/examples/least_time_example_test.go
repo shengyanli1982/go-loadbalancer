@@ -27,8 +27,5 @@ func ExampleNewLeastTime() {
 
 	backend := selector.Select(backends)
 	fmt.Println(backend.Address())
-
-	if releaser, ok := selector.(lb.LeastConnReleaser); ok {
-		releaser.Release(backend)
-	}
+	// Output: 192.168.1.3:8080
 }

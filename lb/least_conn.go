@@ -3,23 +3,43 @@ package lb
 type leastConn struct {
 	connectionTracker
 
-	backends            []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
-	heap                idxHeap   // 索引堆：堆顶为最优后端（最小 conn/平局最小 index）
-	backendsFingerprint uint64
-	backendsSlicePtr    uintptr
-	backendsSliceLen    int
+	backends []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	heap     idxHeap   // 索引堆：堆顶为最优后端（最小 conn/平局最小 index）
+	cacheSnapshot
 }
 
-type LeastConnReleaser interface {
-	Release(backend Backend)
-}
-
-func NewLeastConn() Selector {
+// NewLeastConn creates a least-connections selector.
+//
+// # NewLeastConn 创建 Least Connections（最少连接）选择器
+//
+// 算法语义：
+//   - 选择在途连接数最少的后端；所有后端权重相等时直接比较 conn，权重不全相等时
+//     改为比较 conn/weight（交叉乘法，避免浮点），即加权最少连接
+//   - 平局处理：N < TreeThresholdLeastConn 的线性扫描路径在并列索引间用 rrIndex 轮转；
+//     N >= TreeThresholdLeastConn 走索引堆 O(log n) 路径，平局固定取最小索引
+//     （跨阈值时轮转相位不保证一致）
+//   - Select 递增所选后端的在途连接计数
+//
+// 返回 TrackedSelector，因此 Release 是接口上的静态方法，无需类型断言；
+// 请求完成后必须对同一个 backend 配对调用一次 Release 递减计数，
+// 漏掉会让计数只增不减，被抬高计数的后端遭系统性饿死。
+func NewLeastConn() TrackedSelector {
 	return &leastConn{
-		connectionTracker: *newConnectionTracker(),
+		connectionTracker: newConnectionTracker(),
 	}
 }
 
+// Select 选择在途连接数最少的后端。
+//
+// 算法：
+//   - 比较语义分等权/加权两条路径：所有权重相等（hasUniformWeights）时直接比较 conn；
+//     否则用交叉乘法比较 conn/weight（整数运算，避免浮点），即加权最少连接。
+//   - 平局裁决随规模切换路径而不同：n < TreeThresholdLeastConn 走 selectLinear 线性扫描，
+//     在 tiedIndices 记录的并列索引间用 rrIndex 轮转（公平分配）；n >= TreeThresholdLeastConn
+//     走 selectHeap 取索引堆堆顶 O(log n)，平局固定取最小索引（跨阈值时轮转相位不保证一致，已审计接受）。
+//   - 返回前递增所选后端的在途连接计数（connByIndex[bestIdx]++），须由配对的 Release 递减。
+//
+// 空列表返回 nil；所有可变状态由 mutex 保护。
 func (l *leastConn) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
 		return nil
@@ -29,14 +49,14 @@ func (l *leastConn) Select(backends []Backend) Backend {
 	defer l.mu.Unlock()
 
 	ptr := backendsSlicePtr(backends)
-	if !(ptr == l.backendsSlicePtr && len(backends) == l.backendsSliceLen) {
+	if !(ptr == l.slicePtr && len(backends) == l.sliceLen) {
 		fp := computeWeightedFingerprint(backends)
-		if fp != l.backendsFingerprint || len(l.heap.heap) == 0 {
+		if fp != l.fingerprint || len(l.heap.heap) == 0 {
 			l.rebuildIndex(backends)
-			l.backendsFingerprint = fp
+			l.fingerprint = fp
 		}
-		l.backendsSlicePtr = ptr
-		l.backendsSliceLen = len(backends)
+		l.slicePtr = ptr
+		l.sliceLen = len(backends)
 		l.backends = backends
 	}
 
@@ -44,16 +64,15 @@ func (l *leastConn) Select(backends []Backend) Backend {
 
 	// 平局处理：n < 32 线性路径用 rrIndex 轮转，n >= 32 堆路径固定最小 index；跨阈值轮转相位不保证一致（已审计接受）
 	if n >= TreeThresholdLeastConn {
-		return l.selectTree(backends)
+		return l.selectHeap(backends)
 	}
 
 	return l.selectLinear(backends, n)
 }
 
 func (l *leastConn) selectLinear(backends []Backend, n int) Backend {
-	if cap(l.tiedIndices) < n {
-		l.tiedIndices = make([]int, n)
-	}
+	// resizeSlice 返回 s[:n]，把 len 一并拉满，消除「按 cap 判断却按绝对下标写入」的越界隐患
+	l.tiedIndices = resizeSlice(l.tiedIndices, n)
 
 	var bestIdx int
 
@@ -104,9 +123,9 @@ func (l *leastConn) selectLinear(backends []Backend, n int) Backend {
 	return backends[bestIdx]
 }
 
-// selectTree 堆路径选择，O(logn)：取堆顶（最小 conn，平局最小 index），
+// selectHeap 堆路径选择，O(logn)：取堆顶（最小 conn，平局最小 index），
 // conn++ 后 key 增大，单次 siftDown 修复堆序（等价于旧实现的 delete+reinsert 语义）
-func (l *leastConn) selectTree(backends []Backend) Backend {
+func (l *leastConn) selectHeap(backends []Backend) Backend {
 	if len(l.heap.heap) == 0 {
 		return backends[0]
 	}
@@ -119,6 +138,14 @@ func (l *leastConn) selectTree(backends []Backend) Backend {
 	return backends[bestIdx]
 }
 
+// Release 递减 backend 的在途连接计数，与 Select 的递增配对使用。
+//
+// 语义：
+//   - backend 为 nil、或其地址不在索引中（addrIndex 未命中）、或计数已 <= 0 时直接返回（幂等，不会出现负计数）。
+//   - 先减按位置计数 connByIndex，再同步减按地址计数 connByAddr（后者跨 rebuild 持久化）。
+//   - 堆在 rebuildIndex 时经 rebuildHeap 恒构建：addrIndex 命中即已发生过 rebuild，
+//     heap.pos 恒非 nil，下方守卫恒真。conn-- 使 key 减小，单次 siftUp 修复堆序；
+//     n < TreeThresholdLeastConn 时选择走线性扫描、堆不参与，此处 siftUp 为无害冗余（≤5 次交换）。
 func (l *leastConn) Release(backend Backend) {
 	if backend == nil {
 		return
@@ -256,9 +283,9 @@ func (l *leastConn) heapLess(i, j int) bool {
 
 func (l *leastConn) rebuildIndex(backends []Backend) {
 	l.connectionTracker.rebuildIndex(backends)
-	l.rebuildTree()
+	l.rebuildHeap()
 }
 
-func (l *leastConn) rebuildTree() {
+func (l *leastConn) rebuildHeap() {
 	l.heap.reset(len(l.connByIndex), l.heapLess)
 }

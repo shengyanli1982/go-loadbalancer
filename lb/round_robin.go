@@ -8,6 +8,8 @@ type roundRobin struct {
 	index atomic.Uint64
 }
 
+// NewRoundRobin creates a round-robin selector.
+//
 // NewRoundRobin 创建轮询选择器
 func NewRoundRobin() Selector {
 	return &roundRobin{}
