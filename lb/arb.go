@@ -2,41 +2,52 @@ package lb
 
 import "math"
 
+// ARBOptions configures the active-request-bias selector.
+//
 // ARBOptions 配置选项
 type ARBOptions struct {
-	Bias float64 // 0: 忽略连接数(纯WRR), 1: 标准LeastConn. 默认 1.0
+	// Bias controls how strongly the in-flight count influences the score, valid range (0, 1].
+	//
+	// Bias 控制连接数在评分中的影响强度，取值区间 (0, 1]：
+	// 省略或越出 (0, 1]（<= 0 或 > 1）一律使用默认值 1.0；1.0 为标准 LeastConn；0<bias<1 为权重与连接数的平滑过渡。
+	// bias=0 不是有效取值：按公式 score=weight/(conns+1)^0=weight 会恒选最大权重后端，
+	// 与「按权重比例分配」语义冲突。需要按权重比例分配（WRR）请使用 NewWeightedRR。
+	Bias float64
 }
 
 // activeRequestBias 实现 Active Request Bias (ARB) 算法
 // 对标 Envoy Weighted Least Request：
-//   - score = weight / (active_conns + 1) ^ bias
-//   - bias=0: 退化为纯 WRR（score=weight，所有后端 score 相同）
+//   - score = weight / (active_conns + 1) ^ bias，bias ∈ (0, 1]
 //   - bias=1: 标准 LeastConn（交叉乘法形式）
-//   - 0<bias<1: 平滑过渡
+//   - 0<bias<1: 权重与连接数的平滑过渡
 //   - 选 score 最大的后端
 type activeRequestBias struct {
 	connectionTracker
-	bias                float64
-	backends            []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
-	heap                idxHeap   // 索引堆：堆顶为最优后端（max score/平局最小 index）
-	backendsFingerprint uint64    // 后端列表指纹，变化时清理过期条目
-	backendsSlicePtr    uintptr   // 后端 slice 底层数组地址，用于快速缓存检测
-	backendsSliceLen    int       // 后端 slice 长度，配合指针做快速缓存检测
+	bias     float64
+	backends []Backend // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（仅慢路径更新）
+	heap     idxHeap   // 索引堆：堆顶为最优后端（max score/平局最小 index）
+	cacheSnapshot
 }
 
+// NewActiveRequestBias creates an active-request-bias selector with bias 1.0.
+//
 // NewActiveRequestBias 创建 Active Request Bias 选择器，bias=1.0
-func NewActiveRequestBias() Selector {
+func NewActiveRequestBias() TrackedSelector {
 	return NewActiveRequestBiasWithOptions(&ARBOptions{Bias: 1.0})
 }
 
+// NewActiveRequestBiasWithOptions creates an active-request-bias selector with a configurable bias.
+//
 // NewActiveRequestBiasWithOptions 创建 Active Request Bias 选择器，支持配置 bias
-func NewActiveRequestBiasWithOptions(opts *ARBOptions) Selector {
+// opts 为 nil 或 Bias 越出 (0, 1]（<= 0 或 > 1）时使用默认值 1.0（标准 LeastConn），
+// 与 ARBOptions.Bias godoc 声明的取值区间一致
+func NewActiveRequestBiasWithOptions(opts *ARBOptions) TrackedSelector {
 	bias := 1.0
-	if opts != nil && opts.Bias >= 0 {
+	if opts != nil && opts.Bias > 0 && opts.Bias <= 1 {
 		bias = opts.Bias
 	}
 	return &activeRequestBias{
-		connectionTracker: *newConnectionTracker(),
+		connectionTracker: newConnectionTracker(),
 		bias:              bias,
 	}
 }
@@ -44,11 +55,10 @@ func NewActiveRequestBiasWithOptions(opts *ARBOptions) Selector {
 // Select 使用 Active Request Bias 算法选择一个后端
 // 算法（对标 Envoy Weighted Least Request）：
 //
-//	单轮扫描：遍历所有后端，计算 score = weight / (conns+1)^bias
-//	bias=0 时退化为 RR（score=weight 是常量）
+//	单轮扫描：遍历所有后端，计算 score = weight / (conns+1)^bias，bias ∈ (0, 1]
 //	等权重时 score = 1/(conns+1)^bias，bias=1 时进一步简化为 1/(conns+1)
 //	遇到平局时将索引记录到 tiedIndices，扫描结束后用 rrIndex % tieLen 选取代
-//	N >= arbTreeThreshold 时走索引堆 O(log n) 路径
+//	N >= TreeThresholdARB 时走索引堆 O(log n) 路径
 //	最后递增选中后端的连接数
 func (a *activeRequestBias) Select(backends []Backend) Backend {
 	if len(backends) == 0 {
@@ -60,46 +70,33 @@ func (a *activeRequestBias) Select(backends []Backend) Backend {
 
 	// 快速路径：同一个 slice → 跳过 fingerprint 计算和索引重建
 	ptr := backendsSlicePtr(backends)
-	if !(ptr == a.backendsSlicePtr && len(backends) == a.backendsSliceLen) {
+	if !(ptr == a.slicePtr && len(backends) == a.sliceLen) {
 		fp := computeWeightedFingerprint(backends)
-		if fp != a.backendsFingerprint || len(a.heap.heap) == 0 {
+		if fp != a.fingerprint || len(a.heap.heap) == 0 {
 			a.connectionTracker.rebuildIndex(backends)
-			a.rebuildTree()
-			a.backendsFingerprint = fp
+			a.rebuildHeap()
+			a.fingerprint = fp
 		}
-		a.backendsSlicePtr = ptr
-		a.backendsSliceLen = len(backends)
+		a.slicePtr = ptr
+		a.sliceLen = len(backends)
 		a.backends = backends
 	}
 
 	n := len(backends)
 
-	// 确保 tiedIndices 容量足够（复用，无热路径分配）
-	if cap(a.tiedIndices) < n {
-		a.tiedIndices = make([]int, n)
-	}
-
-	// bias=0 快速路径：退化为 RR
-	if a.bias == 0 {
-		bestIdx := int(a.rrIndex % uint64(n))
-		a.rrIndex++
-		a.connByIndex[bestIdx]++
-		return backends[bestIdx]
-	}
-
 	// 大规模后端：索引堆 O(log n) 路径
 	// 平局处理：n < 32 线性路径用 rrIndex 轮转，n >= 32 堆路径固定最小 index；跨阈值轮转相位不保证一致（已审计接受）
 	if n >= TreeThresholdARB {
-		return a.selectTree(backends)
+		return a.selectHeap(backends)
 	}
 
 	// 小规模后端：线性扫描路径
 	return a.selectLinear(backends, n)
 }
 
-// selectTree 堆路径选择，O(logn)：取堆顶（max score，平局最小 index），
+// selectHeap 堆路径选择，O(logn)：取堆顶（max score，平局最小 index），
 // conn++ 使 score 降低，单次 siftDown 修复堆序（等价于旧实现的 delete+reinsert 语义）
-func (a *activeRequestBias) selectTree(backends []Backend) Backend {
+func (a *activeRequestBias) selectHeap(backends []Backend) Backend {
 	if len(a.heap.heap) == 0 {
 		return backends[0]
 	}
@@ -112,8 +109,11 @@ func (a *activeRequestBias) selectTree(backends []Backend) Backend {
 	return backends[bestIdx]
 }
 
-// selectLinear 线性扫描路径，小规模后端（N < arbTreeThreshold）
+// selectLinear 线性扫描路径，小规模后端（N < TreeThresholdARB）
 func (a *activeRequestBias) selectLinear(backends []Backend, n int) Backend {
+	// resizeSlice 返回 s[:n]，把 len 一并拉满，消除「按 cap 判断却按绝对下标写入」的越界隐患
+	a.tiedIndices = resizeSlice(a.tiedIndices, n)
+
 	var bestIdx int
 
 	// 等权重 + bias=1 快速路径：简化为 LeastConn
@@ -207,7 +207,9 @@ func (a *activeRequestBias) Release(backend Backend) {
 		a.connByAddr[addr] = conn - 1
 	}
 
-	// 堆路径已启用时修复堆序（等价于旧实现的 delete+reinsert 语义）
+	// 堆在 rebuild 时经 rebuildHeap 恒构建（addrIndex 命中即 pos 恒非 nil，守卫恒真）：
+	// conn-- 使 score 升高，单次 siftUp 修复堆序；n < TreeThresholdARB 时堆不参与选择，
+	// 此处 siftUp 为无害冗余（≤5 次交换）
 	if a.heap.pos != nil {
 		a.siftUp(a.heap.pos[idx])
 	}
@@ -361,7 +363,7 @@ func (a *activeRequestBias) heapLess(i, j int) bool {
 	return a.betterScore(i, j)
 }
 
-// rebuildTree 在 rebuildIndex 后重建索引堆（复用容量，O(n) 堆化）
-func (a *activeRequestBias) rebuildTree() {
+// rebuildHeap 在 rebuildIndex 后重建索引堆（复用容量，O(n) 堆化）
+func (a *activeRequestBias) rebuildHeap() {
 	a.heap.reset(len(a.connByIndex), a.heapLess)
 }

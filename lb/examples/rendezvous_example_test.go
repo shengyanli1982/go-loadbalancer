@@ -17,4 +17,5 @@ func ExampleNewRendezvous() {
 	key := []byte("user-session-123")
 	backend := selector.SelectByHash(backends, key)
 	fmt.Println(backend.Address())
+	// Output: 192.168.1.1:8080
 }

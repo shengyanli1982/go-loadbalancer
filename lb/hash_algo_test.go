@@ -98,7 +98,13 @@ func TestRingHash_DifferentKeysDistribution(t *testing.T) {
 
 	for _, addr := range []string{"a", "b", "c"} {
 		assert.True(t, counts[addr] > 0, "backend %s should be selected at least once", addr)
-		assert.InDelta(t, picks/3, counts[addr], 2000,
+		// RingHash 的 key→后端映射是**确定性划分**（SelectByHash 为纯函数，10 次独立运行
+		// 计数逐一相同），并非 i.i.d. 抽样，故二项分布 σ=sqrt(n·p·(1-p))=47.14 不适用：
+		// 实测本 key 集的固定划分为 a=3696 b=3190 c=3114，其中 a 偏离均匀值 3333 达 363
+		// （合 7.69σ）——这是环上虚拟节点数有限导致的结构性偏斜，收紧到 ±6σ(283) 会必然失败。
+		// 取 400：相对原 2000（42.4σ，近乎空断言）收紧 5 倍，覆盖确定性偏斜 363 且留 ~10% 余量，
+		// 因计数恒定故零 flaky，同时能抓到环构造/哈希/虚拟节点数被破坏导致的分布退化。
+		assert.InDelta(t, picks/3, counts[addr], 400,
 			"%s distribution unusual: %d", addr, counts[addr])
 	}
 }
@@ -192,7 +198,13 @@ func TestMaglev_UniformDistribution(t *testing.T) {
 
 	for _, addr := range []string{"a", "b", "c"} {
 		assert.True(t, counts[addr] > 0, "backend %s should be selected", addr)
-		assert.InDelta(t, picks/3, counts[addr], 1800,
+		// Maglev 的 key→后端映射与 RingHash 同为**确定性划分**（SelectByHash 为纯函数，30 次
+		// 独立运行计数逐值相同：a=3341 b=3341 c=3318），并非 i.i.d. 抽样，故二项分布
+		// σ=sqrt(n·p·(1-p))=47.14 不适用，±Nσ 在此无物理意义。实测本 key 集的固有偏斜为
+		// max|count−3333|=15（仅合 0.32σ——65537 槽查找表远比 RingHash 虚拟节点环均匀）。
+		// 取 20：相对原 1800（38.2σ，完全空断言）收紧 90 倍，覆盖确定性偏斜 15 且留 ~33% 余量，
+		// 因计数恒定故零 flaky，同时能抓到查找表构造/哈希/槽数被破坏导致的分布退化。
+		assert.InDelta(t, picks/3, counts[addr], 20,
 			"%s distribution unusual: %d", addr, counts[addr])
 	}
 }

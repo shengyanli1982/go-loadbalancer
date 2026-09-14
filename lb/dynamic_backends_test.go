@@ -161,7 +161,7 @@ func TestDynamicBackends_URIHash_RemoveBackend(t *testing.T) {
 
 func TestDynamicBackends_LeastConn_AddBackend(t *testing.T) {
 	s := NewLeastConn()
-	releaser, ok := s.(LeastConnReleaser)
+	releaser, ok := s.(RequestReleaser)
 	require.True(t, ok)
 
 	backends1 := newTestBackends("a", "b", "c")
@@ -184,7 +184,7 @@ func TestDynamicBackends_LeastConn_AddBackend(t *testing.T) {
 
 func TestDynamicBackends_LeastConn_RemoveBackend(t *testing.T) {
 	s := NewLeastConn()
-	releaser, ok := s.(LeastConnReleaser)
+	releaser, ok := s.(RequestReleaser)
 	require.True(t, ok)
 
 	backends1 := newTestBackends("a", "b", "c", "d", "e")
@@ -203,7 +203,7 @@ func TestDynamicBackends_LeastConn_RemoveBackend(t *testing.T) {
 
 func TestDynamicBackends_LeastConn_ReplaceBackend(t *testing.T) {
 	s := NewLeastConn()
-	releaser, ok := s.(LeastConnReleaser)
+	releaser, ok := s.(RequestReleaser)
 	require.True(t, ok)
 
 	backends1 := newTestBackends("old1", "old2", "old3")
@@ -222,7 +222,7 @@ func TestDynamicBackends_LeastConn_ReplaceBackend(t *testing.T) {
 
 func TestDynamicBackends_LeastConn_ConnectionTrackingPreserved(t *testing.T) {
 	s := NewLeastConn()
-	releaser, ok := s.(LeastConnReleaser)
+	releaser, ok := s.(RequestReleaser)
 	require.True(t, ok)
 
 	backends1 := newTestBackends("a", "b", "c")
@@ -245,8 +245,16 @@ func TestDynamicBackends_LeastConn_ConnectionTrackingPreserved(t *testing.T) {
 			dCount++
 		}
 	}
-	assert.True(t, dCount > 10,
-		"new backend 'd' should be selected more often due to 0 connections, got %d/100", dCount)
+	// 确定性推导（LeastConn 线性路径无随机性，可用精确值断言）：
+	// 前 20 次在 [a b c] 上选择且全程不 Release ⇒ 结束时 conn=[a:7, b:6, c:7]，合计 20。
+	// 切到 [a b c d] 后 rebuildIndex 按**地址**迁移计数，d 为新后端 ⇒ conn[d]=0。
+	// 再选 100 次 ⇒ 总在途 = 20 + 100 = 120。
+	// LeastConn 每次只递增一个「当前最小」后端，故任意时刻 max-min ≤ 1；
+	// 120 在 4 个后端上满足 spread ≤ 1 的整数解唯一 ⇒ conn=[30,30,30,30]。
+	// d 从 0 起步且始终是唯一最小值直到追平 ⇒ 必须精确吸收 30 次；
+	// 对应 a/b/c 分别补 30-7=23、30-6=24、30-7=23（23+24+23+30=100 ✓）。
+	assert.Equal(t, 30, dCount,
+		"new backend 'd' should absorb exactly 30/100 picks to reach the balanced level 30, got %d/100", dCount)
 
 	for _, b := range picked {
 		releaser.Release(b)
@@ -258,7 +266,7 @@ func TestDynamicBackends_LeastConn_ConnectionTrackingPreserved(t *testing.T) {
 
 func TestDynamicBackends_P2C_AddBackend(t *testing.T) {
 	s := NewP2C()
-	releaser, ok := s.(P2CReleaser)
+	releaser, ok := s.(RequestReleaser)
 	require.True(t, ok)
 
 	backends1 := newTestBackends("a", "b")
@@ -282,7 +290,7 @@ func TestDynamicBackends_P2C_AddBackend(t *testing.T) {
 
 func TestDynamicBackends_P2C_RemoveBackend(t *testing.T) {
 	s := NewP2C()
-	releaser, ok := s.(P2CReleaser)
+	releaser, ok := s.(RequestReleaser)
 	require.True(t, ok)
 
 	backends1 := newTestBackends("a", "b", "c", "d", "e")
@@ -691,6 +699,24 @@ func TestRingHash_ReturnsCurrentBackend(t *testing.T) {
 	}
 }
 
+func TestLeastTime_ReturnsCurrentBackend(t *testing.T) {
+	sel := NewLeastTime()
+	b1 := &latencyBackend{address: "a", weight: 1, latency: 10.0}
+	b2 := &latencyBackend{address: "b", weight: 1, latency: 10.0}
+	backends := []Backend{b1, b2}
+	sel.Select(backends)
+
+	b3 := &latencyBackend{address: "a", weight: 1, latency: 10.0}
+	b4 := &latencyBackend{address: "b", weight: 1, latency: 10.0}
+	backends2 := []Backend{b3, b4}
+	for i := 0; i < 10; i++ {
+		got := sel.Select(backends2)
+		if got != b3 && got != b4 {
+			t.Fatalf("expected current backend, got stale cached object")
+		}
+	}
+}
+
 func TestComputeBackendsFingerprint_NoAmbiguityOnConcat(t *testing.T) {
 	b1 := []Backend{NewBackend("a"), NewBackend("bc")}
 	b2 := []Backend{NewBackend("ab"), NewBackend("c")}
@@ -808,7 +834,7 @@ func TestDynamicBackends_AllAlgorithms_SameContentDifferentSlice(t *testing.T) {
 
 	t.Run("ARB", func(t *testing.T) {
 		s := NewActiveRequestBias()
-		releaser, ok := s.(LeastConnReleaser)
+		releaser, ok := s.(RequestReleaser)
 		require.True(t, ok)
 		for i := 0; i < 5; i++ {
 			b := s.Select(backends1)
@@ -839,20 +865,23 @@ func TestDynamicBackends_AllAlgorithms_SameContentDifferentSlice(t *testing.T) {
 
 	t.Run("LeastTime", func(t *testing.T) {
 		sel := NewLeastTime()
-		lb := func(addrs ...string) []Backend {
-			result := make([]Backend, len(addrs))
-			for i, a := range addrs {
-				result[i] = &latencyBackend{address: a, weight: 1, latency: 10.0, conns: 0}
-			}
-			return result
-		}
-		b1 := lb("a", "b", "c")
-		b2 := lb("a", "b", "c")
+		// 两代实例同 addr+weight 但延迟反转：gen1 a 最低（应选 a），gen2 c 最低（应选 c）。
+		// 若指标源未随 slice 更换而重绑到新实例，gen2 的决策仍由 gen1 冻结延迟驱动而错选 a。
+		b1 := newLatencyBackends([]ltConfig{
+			{"a", 1, 1.0, 0},
+			{"b", 1, 50.0, 0},
+			{"c", 1, 99.0, 0},
+		})
+		b2 := newLatencyBackends([]ltConfig{
+			{"a", 1, 99.0, 0},
+			{"b", 1, 50.0, 0},
+			{"c", 1, 1.0, 0},
+		})
 		for i := 0; i < 5; i++ {
-			sel.Select(b1)
+			assertOnlyFrom(t, sel.Select(b1), []string{"a"})
 		}
 		r := sel.Select(b2)
-		assertOnlyFrom(t, r, []string{"a", "b", "c"})
+		assertOnlyFrom(t, r, []string{"c"})
 	})
 }
 
@@ -955,7 +984,7 @@ func TestDynamicBackends_AllAlgorithms_SizeFluctuation(t *testing.T) {
 
 	t.Run("ARB", func(t *testing.T) {
 		s := NewActiveRequestBias()
-		releaser, ok := s.(LeastConnReleaser)
+		releaser, ok := s.(RequestReleaser)
 		require.True(t, ok)
 		for size := 2; size <= 20; size += 3 {
 			addrs := make([]string, size)
@@ -1236,7 +1265,7 @@ func TestDynamicBackends_LeastTime_AllScenarios(t *testing.T) {
 func TestDynamicBackends_ACTIVE_REQUEST_BIAS_AllScenarios(t *testing.T) {
 	t.Run("AddBackend", func(t *testing.T) {
 		s := NewActiveRequestBias()
-		releaser, ok := s.(LeastConnReleaser)
+		releaser, ok := s.(RequestReleaser)
 		require.True(t, ok)
 		b1 := newTestBackends("a", "b", "c")
 		for i := 0; i < 6; i++ {
@@ -1253,7 +1282,7 @@ func TestDynamicBackends_ACTIVE_REQUEST_BIAS_AllScenarios(t *testing.T) {
 
 	t.Run("RemoveBackend", func(t *testing.T) {
 		s := NewActiveRequestBias()
-		releaser, ok := s.(LeastConnReleaser)
+		releaser, ok := s.(RequestReleaser)
 		require.True(t, ok)
 		b1 := newTestBackends("a", "b", "c", "d", "e")
 		for i := 0; i < 20; i++ {

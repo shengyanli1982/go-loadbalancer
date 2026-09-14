@@ -55,16 +55,22 @@ func TestARB_HeapPath_Equivalence(t *testing.T) {
 	}
 }
 
-// runARBEquivalence 用固定种子随机交织 Select/Release，逐步对照参照模型
+// runARBEquivalence 用固定种子随机交织 Select/Release，逐步对照参照模型。
+// 每步操作后追加堆不变量校验（assertIdxHeapInvariants，共享自
+// least_conn_heap_test.go）：ARB 的内联 siftDown/siftUp 按 bias=1 等权
+// （lessConn）/ bias=1 加权（betterARBWeighted）/ 0<bias<1（betterScore）
+// 三条内联路径分发，产物必须始终满足 heapLess 堆序与 pos/heap 互逆。
 func runARBEquivalence(t *testing.T, backends []Backend, weights []int, bias float64) {
 	n := len(backends)
 	selector := NewActiveRequestBiasWithOptions(&ARBOptions{Bias: bias})
-	releaser, ok := selector.(LeastConnReleaser)
+	ab := selector.(*activeRequestBias) // 白盒读取 heap/heapLess（单线程对拍，无并发）
+	releaser, ok := selector.(RequestReleaser)
 	require.True(t, ok)
 
 	conn := make([]int, n)
 	outstanding := make([]int, 0, 64) // 已 Select 未 Release 的后端索引
 	rng := rand.New(rand.NewPCG(1, uint64(n)))
+	less := ab.heapLess
 
 	for step := 0; step < 5000; step++ {
 		// 约 1/3 概率 Release（有未释放项时），其余 Select
@@ -74,6 +80,8 @@ func runARBEquivalence(t *testing.T, backends []Backend, weights []int, bias flo
 			outstanding = append(outstanding[:k], outstanding[k+1:]...)
 			releaser.Release(backends[idx])
 			conn[idx]--
+			assertIdxHeapInvariants(t, ab.heap, less,
+				fmt.Sprintf("n=%d bias=%v step %d Release(%d) 后", n, bias, step, idx))
 			continue
 		}
 
@@ -84,5 +92,7 @@ func runARBEquivalence(t *testing.T, backends []Backend, weights []int, bias flo
 			"step %d: 堆路径选择应与参照模型一致", step)
 		conn[want]++
 		outstanding = append(outstanding, want)
+		assertIdxHeapInvariants(t, ab.heap, less,
+			fmt.Sprintf("n=%d bias=%v step %d Select(%d) 后", n, bias, step, want))
 	}
 }

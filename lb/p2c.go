@@ -9,6 +9,12 @@ import (
 	_ "unsafe" // for go:linkname
 )
 
+// nanotime 直接链接 runtime.nanotime 读取单调时钟（纳秒），用于摊销式衰减计时，避免 time.Now() 开销。
+// 该 //go:linkname 反向引用受运行时官方承诺保护：GOROOT/src/runtime/time_nofake.go 明写
+// “Do not remove or change the type signature”（golang/go issue 67401），故不会因运行时演进而被单方面破坏。
+// //go:noescape 对无指针参数的函数（nanotime 无参、返回 int64，不存在指针逃逸）是空操作，
+// 此处保留仅为与运行时侧声明约定一致。
+//
 //go:noescape
 //go:linkname nanotime runtime.nanotime
 func nanotime() int64
@@ -24,10 +30,10 @@ type cacheSnapshot struct {
 // p2cData 包含 P2C 选择器的所有可变状态。
 // 通过 atomic.Pointer 实现无锁读取，仅在重建时加锁。
 type p2cData struct {
-	backends  []Backend      // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（随快照原子持有）
-	loads     []atomic.Int64 // 按位置索引的负载计数（Select 快速路径）
-	addrs     []string       // 按位置缓存的后端地址
-	addrIndex map[string]int // 地址到位置的映射（Release O(1) 查找）
+	backends   []Backend      // 钉住后端 slice 底层数组，防 GC 回收后地址复用导致 fast path ABA（随快照原子持有）
+	loadCounts []atomic.Int64 // 按位置索引的负载计数（Select 快速路径）
+	addrs      []string       // 按位置缓存的后端地址
+	addrIndex  map[string]int // 地址到位置的映射（Release O(1) 查找）
 	cacheSnapshot
 }
 
@@ -45,24 +51,30 @@ type p2c struct {
 	mu        sync.Mutex              // 仅用于 rebuild（后端列表变化时）
 }
 
-// P2CReleaser 接口，用于在请求完成后释放负载
-type P2CReleaser interface {
-	Release(backend Backend)
-}
-
+// P2COptions configures the Power of Two Choices selector.
+//
 // P2COptions 配置选项
 type P2COptions struct {
+	// Decay is the load decay factor; a smaller value decays faster.
 	Decay float64 // 负载衰减因子，值越小衰减越快
 }
 
+// NewP2C creates a Power of Two Choices selector with default options.
+//
 // NewP2C 创建 P2C 选择器（使用默认配置）
-func NewP2C() Selector {
+func NewP2C() TrackedSelector {
 	return NewP2CWithOptions(nil)
 }
 
+// defaultP2CDecay 是 P2C 的默认负载衰减因子（每秒衰减 10%）。
+// 作为算法内部默认值置于本文件，而非 const.go（后者只放导出常量）。
+const defaultP2CDecay = 0.9
+
+// NewP2CWithOptions creates a Power of Two Choices selector with the given options.
+//
 // NewP2CWithOptions 创建 P2C 选择器（可自定义配置）
-func NewP2CWithOptions(opts *P2COptions) Selector {
-	decay := 0.9 // 默认衰减因子，每秒衰减10%
+func NewP2CWithOptions(opts *P2COptions) TrackedSelector {
+	decay := defaultP2CDecay
 	if opts != nil && opts.Decay > 0 && opts.Decay < 1 {
 		decay = opts.Decay
 	}
@@ -89,7 +101,7 @@ func (p *p2c) Select(backends []Backend) Backend {
 	if len(backends) == 1 {
 		data := p.getData(backends)
 		p.applyDecay(data)
-		data.loads[0].Add(1)
+		data.loadCounts[0].Add(1)
 		return backends[0]
 	}
 
@@ -107,21 +119,21 @@ func (p *p2c) Select(backends []Backend) Backend {
 		p.applyDecay(data)
 	}
 	idx1 := int(u % uint64(n))
-	idx2 := int(u >> 32 % uint64(n-1))
+	idx2 := int((u >> 32) % uint64(n-1))
 	if idx2 >= idx1 {
 		idx2++
 	}
 
 	// 使用 slice 按索引 O(1) 访问，无锁
-	load1 := data.loads[idx1].Load()
-	load2 := data.loads[idx2].Load()
+	load1 := data.loadCounts[idx1].Load()
+	load2 := data.loadCounts[idx2].Load()
 
 	// 选择负载较低的后端
 	if load1 <= load2 {
-		data.loads[idx1].Add(1)
+		data.loadCounts[idx1].Add(1)
 		return backends[idx1]
 	}
-	data.loads[idx2].Add(1)
+	data.loadCounts[idx2].Add(1)
 	return backends[idx2]
 }
 
@@ -150,7 +162,7 @@ func (p *p2c) getDataSlow(backends []Backend, data *p2cData, ptr uintptr, n int)
 	data = p.data.Load()
 
 	// fingerprint 匹配且结构已初始化，仅更新缓存的 ptr/len（避免重复计算 fingerprint）
-	if fp == data.fingerprint && data.loads != nil {
+	if fp == data.fingerprint && data.loadCounts != nil {
 		if ptr != data.slicePtr || n != data.sliceLen {
 			newData := *data // 浅拷贝，共享 loads/addrs/addrIndex
 			newData.slicePtr = ptr
@@ -172,10 +184,10 @@ func (p *p2c) getDataSlow(backends []Backend, data *p2cData, ptr uintptr, n int)
 func (p *p2c) rebuildData(backends []Backend, fp uint64, ptr uintptr, oldData *p2cData) *p2cData {
 	n := len(backends)
 	newData := &p2cData{
-		backends:  backends,
-		loads:     make([]atomic.Int64, n),
-		addrs:     make([]string, n),
-		addrIndex: make(map[string]int, n),
+		backends:   backends,
+		loadCounts: make([]atomic.Int64, n),
+		addrs:      make([]string, n),
+		addrIndex:  make(map[string]int, n),
 		cacheSnapshot: cacheSnapshot{
 			fingerprint: fp,
 			slicePtr:    ptr,
@@ -190,7 +202,7 @@ func (p *p2c) rebuildData(backends []Backend, fp uint64, ptr uintptr, oldData *p
 
 		// 迁移已有负载（如果后端存在于旧状态）
 		if oldIdx, ok := oldData.addrIndex[addr]; ok {
-			newData.loads[i].Store(oldData.loads[oldIdx].Load())
+			newData.loadCounts[i].Store(oldData.loadCounts[oldIdx].Load())
 		}
 	}
 
@@ -233,11 +245,11 @@ func (p *p2c) applyDecay(data *p2cData) {
 
 	// 对所有负载进行指数衰减（periods 个周期合并为一次乘法）
 	factor := math.Pow(p.decay, float64(periods))
-	for i := range data.loads {
+	for i := range data.loadCounts {
 		for {
-			current := data.loads[i].Load()
+			current := data.loadCounts[i].Load()
 			decayed := int64(float64(current) * factor)
-			if data.loads[i].CompareAndSwap(current, decayed) {
+			if data.loadCounts[i].CompareAndSwap(current, decayed) {
 				break
 			}
 		}
@@ -258,7 +270,7 @@ func (p *p2c) Release(backend Backend) {
 		return
 	}
 
-	load := &data.loads[idx]
+	load := &data.loadCounts[idx]
 	for {
 		current := load.Load()
 		if current <= 0 {
